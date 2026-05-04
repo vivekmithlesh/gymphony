@@ -53,6 +53,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { supabase, supabaseUrl } from "@/supabase";
 import { initiatePhonePePayment, finalizeUpgrade as finalizePhonePeUpgrade } from "@/lib/phonepe";
 import { hasAccess, FeatureName, LIMITS } from "@/lib/permissions";
+import { getGymInitials } from "@/lib/utils";
 import { MembersList } from "@/components/MembersList";
 import { KioskMode } from "@/components/KioskMode";
 import { FeatureLock } from "@/components/FeatureLock";
@@ -224,8 +225,14 @@ function DashboardPage() {
           console.error("Date comparison error in dashboard:", dateErr);
         }
       } else {
-        // Default to Free if no settings found
-        setGymSettings({ plan_type: 'Free' });
+        // Fallback: fetch gym name/email from gym_profiles if no settings row yet
+        const { data: profileData } = await supabase
+          .from("gym_profiles")
+          .select("gym_name, email, city")
+          .eq("id", userId)
+          .maybeSingle();
+
+        setGymSettings({ plan_type: 'Free', ...(profileData ? { gym_name: profileData.gym_name, owner_email: profileData.email, city: profileData.city } : {}) });
       }
     } catch (err) {
       console.error("Critical Exception in fetchGymSettings:", err);
@@ -1365,7 +1372,13 @@ function DashboardPage() {
                 className="h-10 w-10 rounded-full bg-gradient-brand p-0.5 transition-transform hover:scale-105"
               >
                 <div className="h-full w-full rounded-full bg-slate-950 flex items-center justify-center overflow-hidden">
-                  <Users className="h-5 w-5 text-white" />
+                  {gymSettings?.logo_url ? (
+                    <img src={gymSettings.logo_url} alt="Gym Logo" className="w-full h-full object-cover" />
+                  ) : gymSettings?.gym_name ? (
+                    <span className="text-white text-xs font-bold">{getGymInitials(gymSettings.gym_name)}</span>
+                  ) : (
+                    <Users className="h-5 w-5 text-white" />
+                  )}
                 </div>
               </button>
 
@@ -1381,8 +1394,8 @@ function DashboardPage() {
                     >
                       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-brand" />
                       <div className="p-5 border-b border-slate-100 bg-slate-50/50">
-                        <p className="font-bold text-slate-900 leading-none mb-1">Gym Owner</p>
-                        <p className="text-xs text-slate-500 font-medium">owner@gymphony.com</p>
+                        <p className="font-bold text-slate-900 leading-none mb-1">{gymSettings?.gym_name || "Gym Owner"}</p>
+                        <p className="text-xs text-slate-500 font-medium">{gymSettings?.owner_email || ""}</p>
                       </div>
                       <div className="p-2">
                         <button 

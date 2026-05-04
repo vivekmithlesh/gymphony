@@ -33,6 +33,7 @@ import { toast } from "sonner";
 import { supabase } from "@/supabase";
 import { initiatePhonePePayment, finalizeUpgrade } from "@/lib/phonepe";
 import { hasAccess } from "@/lib/permissions";
+import { getGymInitials } from "@/lib/utils";
 
 export function SettingsView({ initialCategory = "Gym Profile" }: { initialCategory?: string }) {
   const [activeCategory, setActiveCategory] = useState(initialCategory);
@@ -58,19 +59,21 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
 
   // Settings state
   const [settings, setSettings] = useState<any>({
-    gym_name: "Royal Fitness Gym",
-    city: "Mumbai",
-    address: "123 Fitness Street, Near Central Park",
+    gym_name: "",
+    city: "",
+    address: "",
     owner_email: "",
-    contact_number: "+91 7906240659",
+    contact_number: "",
     whatsapp_reminders: true,
     daily_summary_email: false,
     plan_type: "Free",
     plan_status: "Active",
-    expiry_date: null
+    expiry_date: null,
+    logo_url: null
   });
   const [isLoadingSettings, setIsLoadingLoadingSettings] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const [isProcessingBilling, setIsProcessingBilling] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currency, setCurrency] = useState<'INR' | 'USD'>('INR');
@@ -191,14 +194,20 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
       if (data) {
         setSettings(data);
       } else {
-        // Create default settings if none exist
+        // Fetch actual gym profile data to use as defaults
+        const { data: profileData } = await supabase
+          .from("gym_profiles")
+          .select("gym_name, city, mobile_number")
+          .eq("id", userId)
+          .single();
+
         const defaultSettings = {
           gym_owner_id: userId,
-          gym_name: "Royal Fitness Gym",
-          city: "Mumbai",
-          address: "123 Fitness Street, Near Central Park",
+          gym_name: profileData?.gym_name || "",
+          city: profileData?.city || "",
+          address: "",
           owner_email: email,
-          contact_number: "+91 7906240659",
+          contact_number: profileData?.mobile_number || "",
           whatsapp_reminders: true,
           daily_summary_email: false
         };
@@ -408,16 +417,47 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
   };
 
   const handleLogoClick = () => {
-    fileInputRef.current?.click();
+    if (!isUploadingLogo) fileInputRef.current?.click();
   };
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
-      toast.success(`✅ ${file.name} uploaded successfully!`, {
-        position: "bottom-center",
-      });
-      // In a real app, you would upload the file to a server here
+    if (!file || !currentUserId) return;
+
+    const mimeToExt: Record<string, string> = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+      "image/gif": "gif",
+    };
+    const ext = mimeToExt[file.type];
+    if (!ext) {
+      toast.error("Please select a valid image file (JPG, PNG, WebP, or GIF).");
+      return;
+    }
+
+    setIsUploadingLogo(true);
+    try {
+      const filePath = `${currentUserId}/logo.${ext}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("gym-logos")
+        .upload(filePath, file, { upsert: true, contentType: file.type });
+
+      if (uploadError) throw uploadError;
+
+      const { data: urlData } = supabase.storage
+        .from("gym-logos")
+        .getPublicUrl(filePath);
+
+      const logoUrl = `${urlData.publicUrl}?t=${Date.now()}`;
+      await handleUpdateSettings({ logo_url: logoUrl });
+      toast.success("✅ Logo updated successfully!", { position: "bottom-center" });
+    } catch (err: any) {
+      toast.error(`Logo upload failed: ${err.message}`);
+    } finally {
+      setIsUploadingLogo(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
@@ -489,26 +529,36 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                     </CardHeader>
                     <CardContent className="space-y-6">
                       <div className="flex items-center gap-6">
-                        <div className="relative group">
-                          <div className="h-24 w-24 rounded-3xl bg-gradient-brand flex items-center justify-center font-bold text-3xl text-white shadow-glow">
-                            RF
+                        <div className="relative group cursor-pointer" onClick={handleLogoClick}>
+                          <div className="h-24 w-24 rounded-3xl bg-gradient-brand flex items-center justify-center font-bold text-3xl text-white shadow-glow overflow-hidden">
+                            {settings.logo_url ? (
+                              <img
+                                src={settings.logo_url}
+                                alt="Gym Logo"
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <span>{getGymInitials(settings.gym_name)}</span>
+                            )}
                           </div>
-                          <button 
-                            onClick={handleLogoClick}
-                            className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity rounded-3xl cursor-pointer"
-                          >
-                            <CameraIcon className="h-6 w-6 text-white" />
-                          </button>
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity rounded-3xl">
+                            {isUploadingLogo ? (
+                              <Loader2 className="h-6 w-6 text-white animate-spin" />
+                            ) : (
+                              <CameraIcon className="h-6 w-6 text-white" />
+                            )}
+                          </div>
                         </div>
                         <div>
-                          <h4 className="font-bold text-slate-900">Royal Fitness Gym</h4>
-                          <p className="text-sm text-muted-foreground">Registered since Jan 2024</p>
+                          <h4 className="font-bold text-slate-900">{settings.gym_name || "Your Gym"}</h4>
+                          <p className="text-sm text-muted-foreground">{settings.city || "Set your city in the fields below"}</p>
                           <Button 
                             variant="link" 
                             className="p-0 h-auto text-primary text-xs font-bold"
                             onClick={handleLogoClick}
+                            disabled={isUploadingLogo}
                           >
-                            Change Logo
+                            {isUploadingLogo ? "Uploading..." : "Change Logo"}
                           </Button>
                         </div>
                       </div>
