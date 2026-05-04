@@ -224,8 +224,14 @@ function DashboardPage() {
           console.error("Date comparison error in dashboard:", dateErr);
         }
       } else {
-        // Default to Free if no settings found
-        setGymSettings({ plan_type: 'Free' });
+        // Fallback: fetch gym name/email from gym_profiles if no settings row yet
+        const { data: profileData } = await supabase
+          .from("gym_profiles")
+          .select("gym_name, email, city")
+          .eq("id", userId)
+          .maybeSingle();
+
+        setGymSettings({ plan_type: 'Free', ...(profileData ? { gym_name: profileData.gym_name, owner_email: profileData.email, city: profileData.city } : {}) });
       }
     } catch (err) {
       console.error("Critical Exception in fetchGymSettings:", err);
@@ -1365,7 +1371,20 @@ function DashboardPage() {
                 className="h-10 w-10 rounded-full bg-gradient-brand p-0.5 transition-transform hover:scale-105"
               >
                 <div className="h-full w-full rounded-full bg-slate-950 flex items-center justify-center overflow-hidden">
-                  <Users className="h-5 w-5 text-white" />
+                  {gymSettings?.logo_url ? (
+                    <img src={gymSettings.logo_url} alt="Gym Logo" className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-white text-xs font-bold">
+                      {gymSettings?.gym_name
+                        ? (() => {
+                            const words = gymSettings.gym_name.trim().split(/\s+/);
+                            return words.length >= 2
+                              ? (words[0][0] + words[1][0]).toUpperCase()
+                              : gymSettings.gym_name.slice(0, 2).toUpperCase();
+                          })()
+                        : <Users className="h-5 w-5 text-white" />}
+                    </span>
+                  )}
                 </div>
               </button>
 
@@ -1381,8 +1400,8 @@ function DashboardPage() {
                     >
                       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-brand" />
                       <div className="p-5 border-b border-slate-100 bg-slate-50/50">
-                        <p className="font-bold text-slate-900 leading-none mb-1">Gym Owner</p>
-                        <p className="text-xs text-slate-500 font-medium">owner@gymphony.com</p>
+                        <p className="font-bold text-slate-900 leading-none mb-1">{gymSettings?.gym_name || "Gym Owner"}</p>
+                        <p className="text-xs text-slate-500 font-medium">{gymSettings?.owner_email || ""}</p>
                       </div>
                       <div className="p-2">
                         <button 
