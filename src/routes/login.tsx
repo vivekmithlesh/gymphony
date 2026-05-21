@@ -25,14 +25,20 @@ import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { supabase } from "@/supabase";
+import { hasSupabaseConfig } from "@/supabase";
 import { toast } from "sonner";
 import { useState, useRef, useEffect } from "react";
+import { getDashboardPathForRole, resolveUserRole } from "@/lib/auth-role";
+import { INTERNATIONAL_PHONE_REGEX, cleanPhoneInput, normalizeToE164Phone } from "@/lib/phone";
 
 const signupSchema = z.object({
   gymName: z.string().min(2, "Gym name must be at least 2 characters"),
   city: z.string().min(2, "City must be at least 2 characters"),
   email: z.string().email("Please enter a valid email address"),
-  mobile: z.string().regex(/^[0-9]{10}$/, "Please enter a valid 10-digit mobile number"),
+  mobile: z
+    .string()
+    .transform((value) => cleanPhoneInput(value))
+    .refine((value) => INTERNATIONAL_PHONE_REGEX.test(value), "Please enter a valid international mobile number"),
   password: z.string().min(6, "Password must be at least 6 characters"),
 });
 
@@ -43,6 +49,10 @@ const loginSchema = z.object({
 
 type SignupFormValues = z.infer<typeof signupSchema>;
 type LoginFormValues = z.infer<typeof loginSchema>;
+
+const readRoleValue = (value: unknown): "member" | "owner" | null => {
+  return value === "member" || value === "owner" ? value : null;
+};
 
 const INDIAN_CITIES = [
   "Mumbai", "Delhi", "Bangalore", "Hyderabad", "Ahmedabad", "Chennai", "Kolkata", "Surat", 
@@ -86,7 +96,10 @@ function LoginPage() {
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
-        navigate({ to: "/dashboard", replace: true });
+        const role = await resolveUserRole(session.user);
+        if (role) {
+          navigate({ to: getDashboardPathForRole(role), replace: true });
+        }
       }
     };
     checkSession();
@@ -119,6 +132,12 @@ function LoginPage() {
 
   const [cityOpen, setCityOpen] = useState(false);
 
+  const onLoginInvalid = (errors: Record<string, any>) => {
+    console.log("DEBUG: Login submission blocked by validation:", errors);
+    alert("Please enter both email/mobile and password.");
+    toast.error("Please enter both email/mobile and password.");
+  };
+
   const onSignupSubmit = async (data: SignupFormValues) => {
     if (authControllerRef.current) {
       authControllerRef.current.abort();
@@ -131,28 +150,46 @@ function LoginPage() {
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: data.email,
         password: data.password,
+        options: {
+          data: {
+            role: "owner",
+          },
+        },
       });
 
       if (authError) throw authError;
 
-      // 2. Insert gym profile
-      const { error: profileError } = await supabase.from("gym_profiles").insert([
-        {
-          id: authData.user?.id, // Link profile to auth user
-          gym_name: data.gymName,
-          city: data.city,
-          email: data.email,
-          mobile_number: data.mobile,
-        },
-      ]).abortSignal(authControllerRef.current.signal);
+      // 2. Upsert gym profile (use onConflict to avoid duplicate key errors)
+      const { error: profileError } = await supabase
+        .from("gym_profiles")
+        .upsert(
+          [
+            {
+              id: authData.user?.id, // Link profile to auth user
+              gym_name: data.gymName,
+              city: data.city,
+              email: data.email,
+              mobile_number: data.mobile,
+              role: "owner",
+            },
+          ],
+          { onConflict: "id" }
+        );
 
       if (profileError) {
-        // Silent Abort: Ignore AbortError or Lock broken
         if (
-          profileError.name === 'AbortError' || 
-          profileError.message?.includes('abort') || 
-          profileError.message?.includes('Lock broken')
+          profileError.name === "AbortError" ||
+          profileError.message?.includes("abort") ||
+          profileError.message?.includes("Lock broken")
         ) {
+          return;
+        }
+        // Duplicate key -> give user a helpful message
+        if (
+          String(profileError.message || "").toLowerCase().includes("duplicate") ||
+          String(profileError.code || "").includes("23505")
+        ) {
+          alert("Aapki profile pehle se bani hai, kripya direct Login karein");
           return;
         }
         throw profileError;
@@ -161,7 +198,11 @@ function LoginPage() {
       toast.success("✅ Account created and gym profile setup successfully!");
       signupForm.reset();
       setTimeout(() => {
-        navigate({ to: "/dashboard", replace: true });
+        try {
+          window.location.href = "/dashboard";
+        } catch (e) {
+          navigate({ to: "/dashboard", replace: true, search: {} as never });
+        }
       }, 500);
     } catch (error: any) {
       // Silent error for aborts
@@ -187,17 +228,32 @@ function LoginPage() {
 
     setIsLoading(true);
     try {
+      console.log('Login Step 1: clearing sessions');
+      console.log("DEBUG: Supabase configured:", hasSupabaseConfig);
+      console.log("DEBUG: Clearing existing Supabase session before login...");
+      try {
+        await supabase.auth.signOut();
+        try { localStorage.clear(); } catch (e) { console.warn('localStorage.clear failed', e); }
+      } catch (signOutError) {
+        console.warn("DEBUG: Session clear failed, continuing with login:", signOutError);
+      }
+      if (!hasSupabaseConfig) {
+        alert('Supabase client not configured in this environment. Check .env.local.');
+      }
+      alert('Signing in...');
+      console.log("Attempting Login", { identifier: data.identifier });
+
       let loginEmail = data.identifier;
 
-      // Check if the input is a 10-digit mobile number
-      if (/^[0-9]{10}$/.test(data.identifier)) {
+      // Check if the input is an international mobile number
+      const normalizedMobile = normalizeToE164Phone(data.identifier, "");
+      if (normalizedMobile) {
         console.log("Supabase: Mobile number detected, looking up email...");
         const { data: profile, error: profileError } = await supabase
           .from("gym_profiles")
           .select("email")
-          .eq("mobile_number", data.identifier)
-          .single()
-          .abortSignal(authControllerRef.current.signal);
+          .or(`mobile_number.eq.${normalizedMobile},phone.eq.${normalizedMobile}`)
+          .maybeSingle();
 
         if (profileError || !profile) {
           // Silent Abort: Ignore AbortError or Lock broken
@@ -214,19 +270,67 @@ function LoginPage() {
         console.log("Supabase: Email found for mobile number:", loginEmail);
       }
 
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data: loginData, error } = await supabase.auth.signInWithPassword({
         email: loginEmail,
         password: data.password,
       });
 
-      if (error) throw error;
+      if (error) {
+        console.log("Auth Error", error);
+        alert(error.message || "Login failed. Please check your password.");
+        toast.error(error.message || "Login failed. Please check your password.");
+        return;
+      }
 
-      toast.success("✅ Logged in successfully!");
-      loginForm.reset();
-      
-      setTimeout(() => {
-        navigate({ to: "/dashboard", replace: true });
-      }, 500);
+      const user = loginData?.user;
+      if (user) {
+        console.log("DEBUG: Auth user received:", user.id);
+        alert('Signed in. Fetching role...');
+
+        // Read role from profiles first, then resolve from the database only.
+        const { data: profile, error: fetchError } = await supabase
+          .from("profiles")
+          .select("id, role")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        console.log("Profile Data", profile);
+
+        if (fetchError) {
+          console.error("DEBUG: Error fetching profile on login:", fetchError);
+          try { alert('Failed to fetch profile role: ' + (fetchError?.message || String(fetchError))); } catch (e) { console.warn('alert failed', e); }
+        }
+
+        const profileRole = readRoleValue(profile?.role);
+        console.log("DEBUG: Login profile role:", profileRole ?? "missing");
+        alert(`Role fetched: ${profileRole ?? 'unknown'}`);
+
+        if (!profile) {
+          console.log("DEBUG: Profile row missing, attempting database role resolution only...");
+        }
+
+        const resolvedRole = profileRole ?? (await resolveUserRole(user));
+        if (!resolvedRole) {
+          toast.error("Unable to determine account role.");
+          return;
+        }
+        const target = getDashboardPathForRole(resolvedRole);
+
+        console.log("DEBUG: Login role resolved:", resolvedRole);
+        console.log("DEBUG: Redirect target after login:", target);
+        alert(`Redirecting to: ${target}`);
+
+        toast.success("✅ Logged in successfully!");
+        loginForm.reset();
+        console.log('Login Step 4: performing hard redirect to', target);
+        try { window.location.href = target; } catch (e) { console.warn('Hard redirect failed, falling back to router navigate', e); navigate({ to: target, replace: true }); }
+        return;
+      }
+
+      alert("Login failed. No user session returned.");
+      toast.error("Login failed. No user session returned.");
+      console.log("DEBUG: Login returned no user, redirecting to home.");
+      try { window.location.href = '/'; } catch (e) { navigate({ to: "/", replace: true }); }
     } catch (error: any) {
       // Silent error for aborts
       if (
@@ -238,6 +342,8 @@ function LoginPage() {
         return;
       }
       console.warn("Login error:", error);
+      try { alert(error?.message || "Login failed. Please try again."); } catch (e) { console.warn('alert failed', e); }
+      toast.error(error?.message || "Login failed. Please try again.");
     } finally {
       setIsLoading(false);
     }
@@ -264,11 +370,11 @@ function LoginPage() {
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Navbar />
       
-      <main className="flex-grow relative flex items-center justify-center px-6 py-24 md:py-32 overflow-hidden">
+      <main className="grow relative flex items-center justify-center px-6 py-24 md:py-32 overflow-hidden">
         {/* Background orbs for glassmorphism effect */}
         <div className="glow-orb -top-20 left-1/4 h-72 w-72 bg-primary-glow opacity-30" />
         <div className="glow-orb bottom-20 right-1/4 h-96 w-96 bg-primary opacity-20" />
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_color-mix(in_oklab,_var(--color-primary-glow)_10%,_transparent),_transparent_70%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,color-mix(in_oklab,var(--color-primary-glow)_10%,transparent),transparent_70%)]" />
 
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -347,7 +453,7 @@ function LoginPage() {
                                     <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                                   </Button>
                                 </PopoverTrigger>
-                                <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 bg-slate-900 border-white/10 backdrop-blur-xl">
+                                <PopoverContent className="w-(--radix-popover-trigger-width) p-0 bg-slate-900 border-white/10 backdrop-blur-xl">
                                   <Command className="bg-transparent">
                                     <CommandInput placeholder="Search city..." className="h-10 text-white" />
                                     <CommandList className="max-h-60 overflow-y-auto">
@@ -464,7 +570,7 @@ function LoginPage() {
                       </div>
                     </div>
 
-                    <form className="space-y-6" onSubmit={loginForm.handleSubmit(onLoginSubmit)}>
+                    <form className="space-y-6" onSubmit={loginForm.handleSubmit(onLoginSubmit, onLoginInvalid)}>
                       <div className="space-y-4">
                         <div className="space-y-2 group">
                           <Label htmlFor="identifier-login" className="text-sm font-medium text-foreground/80 group-focus-within:text-primary transition-colors">Email or Mobile Number</Label>
@@ -501,8 +607,15 @@ function LoginPage() {
                         disabled={isLoading || isGoogleLoading}
                         className="w-full h-14 rounded-xl bg-gradient-brand text-primary-foreground font-bold text-lg shadow-glow hover:shadow-primary/40 hover:-translate-y-0.5 transition-all group disabled:opacity-70"
                       >
-                        {isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : (
-                          <>Log In Now <ArrowRight className="ml-2 h-5 w-5 transition-transform group-hover:translate-x-1" /></>
+                        {isLoading ? (
+                          <>
+                            <Loader2 className="h-5 w-5 animate-spin" />
+                            <span className="ml-2">Logging in...</span>
+                          </>
+                        ) : (
+                          <>
+                            Log In Now <ArrowRight className="ml-2 h-5 w-5 transition-transform group-hover:translate-x-1" />
+                          </>
                         )}
                       </Button>
                     </form>

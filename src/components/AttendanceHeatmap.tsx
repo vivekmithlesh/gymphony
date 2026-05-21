@@ -8,125 +8,160 @@ interface HourlyData {
   level: number; // percentage for the bar height
 }
 
+interface GymSettings {
+  id: string;
+  gym_owner_id?: string | null;
+}
+
 export default function AttendanceHeatmap() {
   const [data, setData] = useState<HourlyData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const heatmapControllerRef = useRef<AbortController | null>(null);
+  const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-  useEffect(() => {
-    fetchCheckInData();
+  const hourLabels = Array.from({ length: 24 }, (_, hour) => {
+    if (hour === 0) return '12am';
+    if (hour < 12) return `${hour}am`;
+    if (hour === 12) return '12pm';
+    return `${hour - 12}pm`;
+  });
 
-    const channel = supabase
-      .channel('heatmap_realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'check_ins' }, () => {
-        fetchCheckInData();
-      })
-      .subscribe();
-
-    return () => {
-      if (heatmapControllerRef.current) {
-        heatmapControllerRef.current.abort();
-      }
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  const fetchCheckInData = async () => {
-    // Abort previous request if it's still running
+  const fetchPeakHoursData = async () => {
     if (heatmapControllerRef.current) {
       heatmapControllerRef.current.abort();
     }
     heatmapControllerRef.current = new AbortController();
 
     setIsLoading(true);
+
     try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const ownerId = sessionData.session?.user?.id;
+
+      if (!ownerId) {
+        setData([]);
+        return;
+      }
+
+      const { data: gymData, error: gymError } = await supabase
+        .from('gym_settings')
+        .select('id')
+        .eq('gym_owner_id', ownerId)
+        .maybeSingle();
+
+      if (gymError) {
+        throw gymError;
+      }
+
+      if (!gymData?.id) {
+        setData([]);
+        return;
+      }
+
+      const gymId = gymData.id;
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-      const { data: checkIns, error } = await supabase
-        .from('check_ins')
+      const { data: workoutLogs, error } = await supabase
+        .from('workout_logs')
         .select('created_at')
+        .eq('gym_id', gymId)
         .gte('created_at', thirtyDaysAgo.toISOString())
         .abortSignal(heatmapControllerRef.current.signal);
 
       if (error) {
         if (
-          error.name === 'AbortError' || 
-          error.message?.includes('abort') || 
+          error.name === 'AbortError' ||
+          error.message?.includes('abort') ||
           error.message?.includes('Lock broken')
         ) {
           return;
         }
         throw error;
       }
-      
-      // Relevant hours: 6 AM to 10 PM
-      const displayHours = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
 
-      if (!checkIns || checkIns.length === 0) {
-        // Fallback: Generate Mock Data for Demo
-        const mockData: HourlyData[] = displayHours.map(h => {
-          // Generate a bell curve pattern for mock data
-          const bellCurve = Math.exp(-Math.pow(h - 18, 2) / 20) * 15 + Math.exp(-Math.pow(h - 8, 2) / 10) * 12;
-          const count = Math.round(bellCurve);
-          const hourLabel = h === 12 ? '12pm' : h > 12 ? `${h - 12}pm` : `${h}am`;
-          return {
-            hour: hourLabel,
-            count: count,
-            level: 0 // Will be calculated after
-          };
-        });
-
-        const maxMockCount = Math.max(...mockData.map(d => d.count));
-        setData(mockData.map(d => ({ ...d, level: (d.count / maxMockCount) * 100 })));
+      const logCount = workoutLogs?.length || 0;
+      if (logCount < 5) {
+        setData([]);
         return;
       }
 
-      // Group by hour and calculate average per day (over 30 days)
       const hourCounts: Record<number, number> = {};
-      displayHours.forEach(h => hourCounts[h] = 0);
+      hourLabels.forEach((_, hour) => {
+        hourCounts[hour] = 0;
+      });
 
-      checkIns.forEach((ci: { created_at: string }) => {
-        const date = new Date(ci.created_at);
+      (workoutLogs || []).forEach((log: { created_at: string }) => {
+        const date = new Date(log.created_at);
         const hour = date.getHours();
         if (hourCounts[hour] !== undefined) {
-          hourCounts[hour]++;
+          hourCounts[hour] += 1;
         }
       });
 
-      // Divide by 30 to get daily average
-      const maxAverage = Math.max(...Object.values(hourCounts).map(v => v / 30));
-
-      const formattedData: HourlyData[] = displayHours.map(h => {
-        const avgCount = Number((hourCounts[h] / 30).toFixed(1));
-        const hourLabel = h === 12 ? '12pm' : h > 12 ? `${h - 12}pm` : `${h}am`;
+      const daysObserved = 30;
+      const hourlyAverages = hourLabels.map((label, hour) => {
+        const avgCount = Number((hourCounts[hour] / daysObserved).toFixed(1));
         return {
-          hour: hourLabel,
+          hour: label,
           count: avgCount,
-          level: maxAverage > 0 ? (avgCount / maxAverage) * 100 : 0
+          level: 0,
         };
       });
 
+      const maxAverage = Math.max(...hourlyAverages.map((entry) => entry.count), 0);
+      const formattedData = hourlyAverages.map((entry) => ({
+        ...entry,
+        level: maxAverage > 0 ? (entry.count / maxAverage) * 100 : 0,
+      }));
+
       setData(formattedData);
+
+      if (realtimeChannelRef.current) {
+        supabase.removeChannel(realtimeChannelRef.current);
+      }
+
+      realtimeChannelRef.current = supabase
+        .channel(`peak-hours-${gymId}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'workout_logs', filter: `gym_id=eq.${gymId}` },
+          () => {
+            fetchPeakHoursData();
+          }
+        )
+        .subscribe();
     } catch (error: any) {
-      // Silent error for aborts
       if (
-        error.name === 'AbortError' || 
-        error.message?.includes('abort') || 
+        error.name === 'AbortError' ||
+        error.message?.includes('abort') ||
         error.message?.includes('Lock broken')
       ) {
-        console.warn('Silent fetch error in fetchCheckInData:', error);
         return;
       }
       console.warn('Error fetching peak hours data:', error);
+      setData([]);
     } finally {
       setIsLoading(false);
     }
   };
 
+  useEffect(() => {
+    fetchPeakHoursData();
+
+    return () => {
+      if (heatmapControllerRef.current) {
+        heatmapControllerRef.current.abort();
+      }
+      if (realtimeChannelRef.current) {
+        supabase.removeChannel(realtimeChannelRef.current);
+      }
+    };
+  }, []);
+
   if (isLoading) {
     return (
-      <div className="bg-white rounded-3xl p-6 shadow-sm border border-purple-100 mt-6 h-[240px] flex flex-col items-center justify-center">
+      <div className="bg-white rounded-3xl p-6 shadow-sm border border-purple-100 mt-6 h-60 flex flex-col items-center justify-center">
         <Loader2 className="h-8 w-8 text-primary animate-spin mb-2" />
         <p className="text-sm text-muted-foreground">Calculating peak hours...</p>
       </div>
@@ -134,9 +169,10 @@ export default function AttendanceHeatmap() {
   }
 
   const hasData = data.some(d => d.count > 0);
+  const hasEnoughData = data.length > 0;
 
   return (
-    <div className="bg-white rounded-3xl p-6 shadow-sm border border-purple-100 mt-6 min-h-[240px]">
+    <div className="bg-white rounded-3xl p-6 shadow-sm border border-purple-100 mt-6 min-h-60">
       <div className="flex items-center justify-between mb-6">
         <h3 className="text-lg font-bold text-gray-900">Peak Hours (Average)</h3>
         {hasData && (
@@ -147,13 +183,13 @@ export default function AttendanceHeatmap() {
         )}
       </div>
 
-      {!hasData ? (
+      {!hasEnoughData ? (
         <div className="flex flex-col items-center justify-center h-32 text-center">
           <div className="w-12 h-12 bg-slate-50 rounded-full flex items-center justify-center mb-3">
             <TrendingUp className="h-6 w-6 text-slate-300" />
           </div>
-          <p className="text-sm text-slate-500 font-medium">No check-in data yet</p>
-          <p className="text-[11px] text-slate-400 mt-1">Check-ins will appear here as members arrive</p>
+          <p className="text-sm text-slate-500 font-medium">Collecting more data to show peak hours accurately</p>
+          <p className="text-[11px] text-slate-400 mt-1">We need at least 5 workout logs from your gym to calculate meaningful averages.</p>
         </div>
       ) : (
         <div className="flex items-end justify-between h-32 gap-1 md:gap-2">

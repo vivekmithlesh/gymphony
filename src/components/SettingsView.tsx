@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  Settings, 
-  Building2, 
-  ShieldCheck, 
-  Bell, 
-  CreditCard, 
+import {
+  Settings,
+  Building2,
+  ShieldCheck,
+  Bell,
+  CreditCard,
   HelpCircle,
   Camera as CameraIcon,
   Save,
@@ -21,12 +21,22 @@ import {
   CheckCircle2,
   Sparkles,
   Zap,
-  Globe
+  LocateFixed,
+  MapPinned,
+  Search,
+  Navigation2,
+  Crosshair,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -34,392 +44,679 @@ import { supabase } from "@/supabase";
 import { initiatePhonePePayment, finalizeUpgrade } from "@/lib/phonepe";
 import { hasAccess } from "@/lib/permissions";
 
-export function SettingsView({ initialCategory = "Gym Profile" }: { initialCategory?: string }) {
-  const [activeCategory, setActiveCategory] = useState(initialCategory);
+// ─── Constants ───────────────────────────────────────────────────────────────
 
-  // Sync with prop changes (useful for deep linking)
+const MEDIA_BUCKET = "gym-photos";
+const ALIGARH_CENTER: [number, number] = [27.8974, 78.088];
+const IMAGE_MAX_BYTES = 25 * 1024 * 1024; // 25 MB
+const VIDEO_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type LocationDraft = {
+  latitude: number | null;
+  longitude: number | null;
+};
+
+type GymSettings = {
+  id?: string;
+  gym_owner_id?: string;
+  gym_name: string;
+  owner_name: string;
+  city: string;
+  address: string;
+  owner_email: string;
+  contact_number: string;
+  logo_url: string | null;
+  gym_photos: string[];
+  gym_videos: string[];
+  latitude: number | null;
+  longitude: number | null;
+  opening_time: string;
+  closing_time: string;
+  description: string;
+  whatsapp_reminders: boolean;
+  daily_summary_email: boolean;
+  plan_type: "Free" | "Pro";
+  plan_status: "Active" | "Inactive" | "Expired";
+  expiry_date: string | null;
+};
+
+type Plan = {
+  id: string;
+  gym_id: string;
+  name: string;
+  plan_name?: string;
+  price: number;
+  duration: number;
+  duration_days?: number;
+  created_at?: string;
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const toFiniteNumber = (value: unknown): number | null => {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : null;
+};
+
+const buildDefaultSettings = (userId: string, email: string): Omit<GymSettings, "id"> => ({
+  gym_owner_id: userId,
+  gym_name: "Royal Fitness Gym",
+  owner_name: "",
+  city: "Mumbai",
+  address: "123 Fitness Street, Near Central Park",
+  owner_email: email,
+  contact_number: "+91 7906240659",
+  logo_url: null,
+  gym_photos: [],
+  gym_videos: [],
+  latitude: null,
+  longitude: null,
+  opening_time: "",
+  closing_time: "",
+  description: "",
+  whatsapp_reminders: true,
+  daily_summary_email: false,
+  plan_type: "Free",
+  plan_status: "Active",
+  expiry_date: null,
+});
+
+async function compressImage(file: File, maxWidth = 1920, quality = 0.8): Promise<File> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxWidth / img.width);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return resolve(file);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) return resolve(file);
+          resolve(new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), { type: "image/jpeg" }));
+        },
+        "image/jpeg",
+        quality,
+      );
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
+
+// ─── SSR-safe Leaflet Map ─────────────────────────────────────────────────────
+
+interface LeafletMapProps {
+  center: [number, number];
+  zoom: number;
+  className?: string;
+  children: (leaflet: Record<string, unknown>) => React.ReactNode;
+}
+
+function LeafletMap({ center, zoom, className, children }: LeafletMapProps) {
+  const [leaflet, setLeaflet] = useState<Record<string, unknown> | null>(null);
+
   useEffect(() => {
-    if (initialCategory) {
-      setActiveCategory(initialCategory);
-    }
-  }, [initialCategory]);
+    Promise.all([import("leaflet"), import("react-leaflet")]).then(([L, RL]) => {
+      setLeaflet({ L: L.default ?? L, ...RL });
+    });
+  }, []);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const plansControllerRef = useRef<AbortController | null>(null);
-  
-  // Plans state
-  const [plans, setPlans] = useState<any[]>([]);
+  if (!leaflet) {
+    return (
+      <div className="flex h-80 w-full items-center justify-center rounded-2xl border border-slate-100 bg-slate-50">
+        <Loader2 className="h-6 w-6 animate-spin text-primary opacity-30" />
+      </div>
+    );
+  }
+
+  const { MapContainer, TileLayer } = leaflet as {
+    MapContainer: React.ComponentType<Record<string, unknown>>;
+    TileLayer: React.ComponentType<Record<string, unknown>>;
+  };
+
+  return (
+    <MapContainer center={center} zoom={zoom} className={className} scrollWheelZoom>
+      <TileLayer
+        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+      />
+      {children(leaflet)}
+    </MapContainer>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+export function SettingsView({ initialCategory = "Gym Profile" }: { initialCategory?: string }) {
+  // ── Navigation ──────────────────────────────────────────────────────────────
+  const [activeCategory, setActiveCategory] = useState(initialCategory);
+  useEffect(() => { setActiveCategory(initialCategory); }, [initialCategory]);
+
+  // ── Refs ────────────────────────────────────────────────────────────────────
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const plansAbortRef = useRef<AbortController | null>(null);
+
+  // ── Auth / IDs ──────────────────────────────────────────────────────────────
+  const [userId, setUserId] = useState<string | null>(null);
+  const [gymId, setGymId] = useState<string | null>(null);
+  const [currency, setCurrency] = useState<"INR" | "USD">("INR");
+
+  // ── Settings state ──────────────────────────────────────────────────────────
+  const [settings, setSettings] = useState<GymSettings>(() =>
+    buildDefaultSettings("", "") as GymSettings,
+  );
+  const [isLoadingSettings, setIsLoadingSettings] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // ── Location state ──────────────────────────────────────────────────────────
+  const [locationDraft, setLocationDraft] = useState<LocationDraft>({ latitude: null, longitude: null });
+  const [locationQuery, setLocationQuery] = useState("");
+  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
+  const [isSearchingLocation, setIsSearchingLocation] = useState(false);
+  const [isSavingLocation, setIsSavingLocation] = useState(false);
+
+  // ── Gallery state ───────────────────────────────────────────────────────────
+  const [isUploadingGallery, setIsUploadingGallery] = useState(false);
+
+  // ── Plans state ─────────────────────────────────────────────────────────────
+  const [plans, setPlans] = useState<Plan[]>([]);
   const [isLoadingPlans, setIsLoadingPlans] = useState(false);
   const [isAddingPlan, setIsAddingPlan] = useState(false);
-  const [editingPlan, setEditingPlan] = useState<any>(null);
-  const [newPlanName, setNewPlanName] = useState("");
-  const [newPlanPrice, setNewPlanPrice] = useState("");
-  const [newPlanDuration, setNewPlanDuration] = useState("");
+  const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
+  const [planForm, setPlanForm] = useState({ name: "", price: "", duration: "" });
 
-  // Settings state
-  const [settings, setSettings] = useState<any>({
-    gym_name: "Royal Fitness Gym",
-    city: "Mumbai",
-    address: "123 Fitness Street, Near Central Park",
-    owner_email: "",
-    contact_number: "+91 7906240659",
-    whatsapp_reminders: true,
-    daily_summary_email: false,
-    plan_type: "Free",
-    plan_status: "Active",
-    expiry_date: null
-  });
-  const [isLoadingSettings, setIsLoadingLoadingSettings] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
+  // ── Billing state ───────────────────────────────────────────────────────────
   const [isProcessingBilling, setIsProcessingBilling] = useState(false);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [currency, setCurrency] = useState<'INR' | 'USD'>('INR');
 
+  // ── Init ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    // Detect currency
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (tz.startsWith('Asia/Calcutta') || tz.startsWith('Asia/Kolkata')) {
-      setCurrency('INR');
-    } else {
-      setCurrency('USD');
-    }
+    setCurrency(tz.startsWith("Asia/Calcutta") || tz.startsWith("Asia/Kolkata") ? "INR" : "USD");
   }, []);
-
-  const handleStartTrial = async () => {
-    if (!currentUserId) return;
-    setIsProcessingBilling(true);
-    try {
-      const thirtyDaysFromNow = new Date();
-      thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-      
-      const updates = {
-        plan_type: "Free",
-        plan_status: "Active",
-        expiry_date: thirtyDaysFromNow.toISOString()
-      };
-
-      const { error } = await supabase
-        .from("gym_settings")
-        .update(updates)
-        .eq("gym_owner_id", currentUserId);
-
-      if (error) throw error;
-      
-      setSettings({ ...settings, ...updates });
-      toast.success("✅ 30-day Free Trial started!");
-    } catch (err: any) {
-      toast.error(`Trial error: ${err.message}`);
-    } finally {
-      setIsProcessingBilling(false);
-    }
-  };
-
-  const handleGetPro = async () => {
-    if (currency === 'INR') {
-      await handlePhonePe();
-    } else {
-      await handleStripe();
-    }
-  };
-
-  const handlePhonePe = async () => {
-    if (!currentUserId) return;
-    
-    await initiatePhonePePayment(
-      1999, 
-      currentUserId, 
-      async () => {
-        const success = await finalizeUpgrade(currentUserId);
-        if (success) {
-          const { data } = await supabase
-            .from("gym_settings")
-            .select("*")
-            .eq("gym_owner_id", currentUserId)
-            .single();
-          if (data) setSettings(data);
-        }
-      },
-      setIsProcessingBilling
-    );
-  };
-
-  const handleStripe = async () => {
-    const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
-    if (!STRIPE_KEY) {
-      toast.error("Stripe Key missing.");
-      return;
-    }
-
-    setIsProcessingBilling(true);
-    try {
-      const { loadStripe } = await import('@stripe/stripe-js');
-      const stripe = await loadStripe(STRIPE_KEY);
-      if (!stripe) throw new Error("Stripe failed to load");
-
-      toast.info("Redirecting to Stripe Checkout...");
-      setTimeout(async () => {
-        await finalizeUpgrade();
-      }, 2000);
-    } catch (err: any) {
-      toast.error(err.message);
-      setIsProcessingBilling(false);
-    }
-  };
 
   useEffect(() => {
-    const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user?.id) {
-        setCurrentUserId(session.user.id);
-        fetchSettings(session.user.id, session.user.email || "");
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setUserId(session.user.id);
+        fetchSettings(session.user.id, session.user.email ?? "");
+      } else {
+        setIsLoadingSettings(false);
       }
-    };
-    init();
+    });
   }, []);
 
-  const fetchSettings = async (userId: string, email: string) => {
-    setIsLoadingLoadingSettings(true);
+  useEffect(() => {
+    setLocationDraft({
+      latitude: toFiniteNumber(settings.latitude),
+      longitude: toFiniteNumber(settings.longitude),
+    });
+  }, [settings.latitude, settings.longitude]);
+
+  useEffect(() => {
+    if (activeCategory === "Billing & Plans") fetchPlans();
+  }, [activeCategory]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Fetch settings ───────────────────────────────────────────────────────────
+  const fetchSettings = useCallback(async (uid: string, email: string) => {
+    setIsLoadingSettings(true);
     try {
       const { data, error } = await supabase
         .from("gym_settings")
         .select("*")
-        .eq("gym_owner_id", userId)
+        .eq("gym_owner_id", uid)
         .single();
 
       if (error && error.code !== "PGRST116") throw error;
 
       if (data) {
-        setSettings(data);
-      } else {
-        // Create default settings if none exist
-        const defaultSettings = {
-          gym_owner_id: userId,
-          gym_name: "Royal Fitness Gym",
-          city: "Mumbai",
-          address: "123 Fitness Street, Near Central Park",
-          owner_email: email,
-          contact_number: "+91 7906240659",
-          whatsapp_reminders: true,
-          daily_summary_email: false
-        };
-        const { data: newData, error: insertError } = await supabase
-          .from("gym_settings")
-          .insert(defaultSettings)
-          .select()
-          .single();
-        
-        if (!insertError && newData) setSettings(newData);
-      }
-    } catch (err: any) {
-      console.warn("Settings fetch error:", err.message);
-    } finally {
-      setIsLoadingLoadingSettings(false);
-    }
-  };
-
-  const handleUpdateSettings = async (updates: any) => {
-    if (!currentUserId) return;
-    
-    const newSettings = { ...settings, ...updates };
-    setSettings(newSettings);
-    
-    try {
-      setIsSaving(true);
-      const { error } = await supabase
-        .from("gym_settings")
-        .upsert({ 
-          ...newSettings, 
-          gym_owner_id: currentUserId,
-          updated_at: new Date().toISOString()
-        })
-        .eq("gym_owner_id", currentUserId);
-
-      if (error) throw error;
-    } catch (err: any) {
-      console.warn("Auto-save error:", err.message);
-      if (err.message?.includes('plan_type')) {
-        toast.error("Database Schema Mismatch", {
-          description: "Run this SQL in Supabase: ALTER TABLE gym_settings ADD COLUMN plan_type TEXT DEFAULT 'Free';",
-          duration: 10000
+        setGymId(data.id ?? null);
+        setSettings({
+          ...data,
+          latitude: toFiniteNumber(data.latitude ?? data.lat),
+          longitude: toFiniteNumber(data.longitude ?? data.lng),
+          gym_photos: Array.isArray(data.gym_photos) ? data.gym_photos : [],
+          gym_videos: Array.isArray(data.gym_videos) ? data.gym_videos : [],
         });
       } else {
-        toast.error("Auto-save failed");
+        const defaults = buildDefaultSettings(uid, email);
+        const { data: created, error: insertError } = await supabase
+          .from("gym_settings")
+          .insert(defaults)
+          .select()
+          .single();
+        if (!insertError && created) {
+          setGymId(created.id ?? null);
+          setSettings({ ...defaults, id: created.id } as GymSettings);
+        }
       }
+    } catch (err: unknown) {
+      toast.error("Could not load settings: " + (err as Error).message);
     } finally {
-      setIsSaving(false);
+      setIsLoadingSettings(false);
     }
-  };
+  }, []);
 
-  const handlePasswordReset = async () => {
-    if (!settings.owner_email) {
-      toast.error("Owner email not found");
+  // ── Persist settings ─────────────────────────────────────────────────────────
+  const persistSettings = useCallback(
+    async (partial: Partial<GymSettings>): Promise<boolean> => {
+      if (!userId) return false;
+      const merged = { ...settings, ...partial };
+      setSettings(merged);
+
+      setIsSaving(true);
+      try {
+        // Never upsert internal-only or undefined columns
+        const { id, ...payload } = merged as GymSettings & { id?: string };
+        const { error } = await supabase
+          .from("gym_settings")
+          .upsert(
+            { ...payload, gym_owner_id: userId, updated_at: new Date().toISOString() },
+            { onConflict: "gym_owner_id" },
+          );
+        if (error) throw error;
+
+        window.dispatchEvent(new CustomEvent("gym-settings-updated", { detail: merged }));
+        return true;
+      } catch (err: unknown) {
+        const msg = (err as Error).message ?? "";
+        // Provide actionable schema-mismatch hints
+        const schemaHints: Record<string, string> = {
+          owner_name: "ALTER TABLE gym_settings ADD COLUMN owner_name TEXT;",
+          plan_type: "ALTER TABLE gym_settings ADD COLUMN plan_type TEXT DEFAULT 'Free';",
+          logo_url: "ALTER TABLE gym_settings ADD COLUMN logo_url TEXT;",
+          latitude: "ALTER TABLE gym_settings ADD COLUMN latitude NUMERIC, longitude NUMERIC;",
+          opening_time: "ALTER TABLE gym_settings ADD COLUMN opening_time TEXT, closing_time TEXT, description TEXT, address TEXT;",
+          gym_photos: "ALTER TABLE gym_settings ADD COLUMN gym_photos TEXT[], gym_videos TEXT[];",
+        };
+        const hint = Object.entries(schemaHints).find(([key]) => msg.includes(key));
+        if (hint) {
+          toast.error("Schema mismatch", { description: `Run: ${hint[1]}`, duration: 10_000 });
+        } else {
+          toast.error("Save failed", { description: msg || "Check connection or DB permissions." });
+        }
+        return false;
+      } finally {
+        setIsSaving(false);
+      }
+    },
+    [userId, settings],
+  );
+
+  // ── Logo upload ───────────────────────────────────────────────────────────────
+  const handleLogoChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const logoUrl = typeof reader.result === "string" ? reader.result : null;
+        if (!logoUrl) { toast.error("Could not read logo file."); return; }
+        const saved = await persistSettings({ logo_url: logoUrl });
+        if (saved) toast.success(`${file.name} saved!`, { position: "bottom-center" });
+      };
+      reader.onerror = () => toast.error("Could not read logo file.");
+      reader.readAsDataURL(file);
+      e.target.value = "";
+    },
+    [persistSettings],
+  );
+
+  // ── Gallery upload ────────────────────────────────────────────────────────────
+  const handleGalleryChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? []);
+      e.target.value = "";
+      if (!files.length) return;
+      if (!userId) { toast.error("Sign in to upload media."); return; }
+
+      // Verify bucket access first
+      const probe = await supabase.storage.from(MEDIA_BUCKET).list("", { limit: 1 });
+      if (probe.error) {
+        toast.error(`Storage bucket '${MEDIA_BUCKET}' is not accessible. Check Supabase project.`);
+        return;
+      }
+
+      setIsUploadingGallery(true);
+      const newPhotos: string[] = [];
+      const newVideos: string[] = [];
+
+      for (const file of files) {
+        const isImage = file.type.startsWith("image/");
+        const isVideo = file.type.startsWith("video/") || file.name.toLowerCase().endsWith(".mp4");
+
+        if (!isImage && !isVideo) { toast.error(`${file.name}: unsupported type, skipped.`); continue; }
+        if (isImage && file.size > IMAGE_MAX_BYTES) { toast.error(`${file.name}: exceeds 25 MB, skipped.`); continue; }
+        if (isVideo && file.size > VIDEO_MAX_BYTES) { toast.error(`${file.name}: exceeds 50 MB, skipped.`); continue; }
+
+        let uploadFile: File = file;
+        if (isImage) {
+          try {
+            const compressed = await compressImage(file);
+            if (compressed.size <= IMAGE_MAX_BYTES) uploadFile = compressed;
+          } catch { /* use original */ }
+        }
+
+        const safeName = file.name.replace(/[^a-zA-Z0-9_.-]/g, "_");
+        const filePath = `${userId}/${Date.now()}_${safeName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from(MEDIA_BUCKET)
+          .upload(filePath, uploadFile, { upsert: true });
+
+        if (uploadError) {
+          const hint = uploadError.status === 403
+            ? "Upload blocked (403): check bucket permissions."
+            : uploadError.message.toLowerCase().includes("not found")
+            ? `Bucket '${MEDIA_BUCKET}' not found in Supabase Storage.`
+            : uploadError.message;
+          toast.error(`${file.name}: ${hint}`);
+          continue;
+        }
+
+        // Prefer public URL, fall back to signed URL (1 hour)
+        const { data: pub } = supabase.storage.from(MEDIA_BUCKET).getPublicUrl(filePath);
+        const url = pub?.publicUrl || await supabase.storage
+          .from(MEDIA_BUCKET)
+          .createSignedUrl(filePath, 3600)
+          .then((r) => r.data?.signedUrl ?? null);
+
+        if (!url) { toast.error(`${file.name}: uploaded but URL unavailable.`); continue; }
+        if (isVideo) newVideos.push(url); else newPhotos.push(url);
+      }
+
+      if (!newPhotos.length && !newVideos.length) {
+        toast.error("No media uploaded. Check bucket permissions.");
+        setIsUploadingGallery(false);
+        return;
+      }
+
+      // Fetch current DB values to avoid overwriting concurrent changes
+      const { data: current } = await supabase
+        .from("gym_settings")
+        .select("gym_photos, gym_videos")
+        .eq("gym_owner_id", userId)
+        .single();
+
+      const merged = {
+        gym_photos: [...(Array.isArray(current?.gym_photos) ? current.gym_photos : []), ...newPhotos],
+        gym_videos: [...(Array.isArray(current?.gym_videos) ? current.gym_videos : []), ...newVideos],
+      };
+
+      const saved = await persistSettings(merged);
+      if (saved) {
+        toast.success("Gallery updated!");
+        await fetchSettings(userId, settings.owner_email);
+      }
+      setIsUploadingGallery(false);
+    },
+    [userId, settings.owner_email, persistSettings, fetchSettings],
+  );
+
+  const handleRemoveMedia = useCallback(
+    async (url: string, type: "photo" | "video") => {
+      const nextPhotos = type === "photo"
+        ? (settings.gym_photos ?? []).filter((u) => u !== url)
+        : settings.gym_photos ?? [];
+      const nextVideos = type === "video"
+        ? (settings.gym_videos ?? []).filter((u) => u !== url)
+        : settings.gym_videos ?? [];
+
+      const saved = await persistSettings({ gym_photos: nextPhotos, gym_videos: nextVideos });
+      if (!saved) return;
+
+      // Best-effort storage deletion
+      try {
+        const pathPart = url.split(`/${MEDIA_BUCKET}/`)[1];
+        if (pathPart) {
+          await supabase.storage.from(MEDIA_BUCKET).remove([decodeURIComponent(pathPart.split("?")[0])]);
+        }
+      } catch { /* non-fatal */ }
+      toast.success("Media removed.");
+    },
+    [settings.gym_photos, settings.gym_videos, persistSettings],
+  );
+
+  // ── Location ──────────────────────────────────────────────────────────────────
+  const pickLocation = useCallback((lat: number, lng: number) => {
+    setLocationDraft({ latitude: lat, longitude: lng });
+    setLocationQuery(`${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+  }, []);
+
+  const detectLocation = useCallback(() => {
+    if (!navigator.geolocation) { toast.error("GPS not available in this browser."); return; }
+    setIsDetectingLocation(true);
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        pickLocation(coords.latitude, coords.longitude);
+        toast.success("Location detected!");
+        setIsDetectingLocation(false);
+      },
+      (err) => { toast.error(err.message || "Could not detect location."); setIsDetectingLocation(false); },
+      { enableHighAccuracy: true, timeout: 12_000, maximumAge: 60_000 },
+    );
+  }, [pickLocation]);
+
+  const searchLocation = useCallback(async () => {
+    const query = locationQuery.trim();
+    if (!query) { toast.error("Enter a location to search."); return; }
+    setIsSearchingLocation(true);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(query)}`,
+        { headers: { Accept: "application/json" } },
+      );
+      if (!res.ok) throw new Error("Search request failed.");
+      const results = await res.json() as { lat: string; lon: string; display_name?: string }[];
+      const first = results[0];
+      if (!first) { toast.error("No location found."); return; }
+      pickLocation(Number(first.lat), Number(first.lon));
+      setLocationQuery(first.display_name ?? query);
+      toast.success("Location found on map!");
+    } catch (err: unknown) {
+      toast.error((err as Error).message || "Location search failed.");
+    } finally {
+      setIsSearchingLocation(false);
+    }
+  }, [locationQuery, pickLocation]);
+
+  const saveLocation = useCallback(async () => {
+    if (!userId) { toast.error("Sign in first."); return; }
+    if (locationDraft.latitude === null || locationDraft.longitude === null) {
+      toast.error("Pick a location on the map first.");
       return;
     }
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(settings.owner_email, {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-      if (error) throw error;
-      toast.success("✅ Password reset link sent to your email!");
-    } catch (err: any) {
-      toast.error(`Error: ${err.message}`);
-    }
-  };
+    setIsSavingLocation(true);
+    const saved = await persistSettings({
+      latitude: locationDraft.latitude,
+      longitude: locationDraft.longitude,
+    });
+    if (saved) toast.success("Gym location saved!");
+    setIsSavingLocation(false);
+  }, [userId, locationDraft, persistSettings]);
 
-  const handleSupportEmail = () => {
-    const subject = encodeURIComponent("Support Request - Gymphony");
-    window.location.href = `mailto:support@gymphony.com?subject=${subject}`;
-  };
-
-  const handleSave = async () => {
-    await handleUpdateSettings(settings);
-    toast.success("✅ Settings saved successfully!");
-  };
-
-  const startEditing = (plan: any) => {
-    setEditingPlan(plan);
-    setNewPlanName(plan.name);
-    setNewPlanPrice(String(plan.price));
-    setNewPlanDuration(String(plan.duration));
-    setIsAddingPlan(false);
-  };
-
-  const handleDeletePlan = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this plan?")) return;
-    try {
-      const { error } = await supabase
-        .from("gym_plans")
-        .delete()
-        .eq("id", id);
-
-      if (error) throw error;
-      setPlans(plans.filter(p => p.id !== id));
-      toast.success("✅ Plan deleted successfully!");
-    } catch (error: any) {
-      console.warn("Error deleting plan:", error.message);
-    }
-  };
-
-  useEffect(() => {
-    if (activeCategory === "Billing & Plans") {
-      fetchPlans();
-    }
-  }, [activeCategory]);
-
-  const fetchPlans = async () => {
+  // ── Plans ─────────────────────────────────────────────────────────────────────
+  const fetchPlans = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user?.id) return;
-    
-    // Abort previous request if it's still running
-    if (plansControllerRef.current) {
-      plansControllerRef.current.abort();
-    }
-    plansControllerRef.current = new AbortController();
 
+    plansAbortRef.current?.abort();
+    plansAbortRef.current = new AbortController();
     setIsLoadingPlans(true);
+
     try {
+      let resolvedGymId = gymId;
+      if (!resolvedGymId) {
+        const { data: row } = await supabase
+          .from("gym_settings")
+          .select("id")
+          .eq("gym_owner_id", session.user.id)
+          .maybeSingle();
+        resolvedGymId = row?.id ?? null;
+        if (resolvedGymId) setGymId(resolvedGymId);
+      }
+      if (!resolvedGymId) { setPlans([]); return; }
+
       const { data, error } = await supabase
         .from("gym_plans")
         .select("*")
-        .eq("gym_owner_id", session.user.id)
         .order("created_at", { ascending: true })
-        .abortSignal(plansControllerRef.current.signal);
+        .abortSignal(plansAbortRef.current.signal);
 
-      if (error) {
-        if (error.name === 'AbortError') return;
-        throw error;
-      }
-      setPlans(data || []);
-    } catch (error: any) {
-      if (error.name !== 'AbortError') {
-        console.warn("Failed to load plans:", error.message);
-      }
+      if (error) { if (error.name === "AbortError") return; throw error; }
+
+      setPlans(
+        (data ?? [])
+          .filter((p: Plan) => String(p.gym_id) === String(resolvedGymId))
+          .map((p: Plan) => ({ ...p, name: p.name ?? p.plan_name, plan_name: p.name ?? p.plan_name })),
+      );
+    } catch (err: unknown) {
+      if ((err as Error).name !== "AbortError")
+        toast.error("Could not load plans: " + (err as Error).message);
     } finally {
       setIsLoadingPlans(false);
     }
-  };
+  }, [gymId]);
 
-  const handleAddPlan = async () => {
-    if (!newPlanName || !newPlanPrice || !newPlanDuration) {
-      toast.error("Please fill in all fields");
-      return;
-    }
-
-    if (!currentUserId) return;
-
+  const handleAddPlan = useCallback(async () => {
+    const { name, price, duration } = planForm;
+    if (!name || !price || !duration) { toast.error("Fill all plan fields."); return; }
     try {
-      const { data, error } = await supabase
-        .from("gym_plans")
-        .insert([{
-          gym_owner_id: currentUserId,
-          name: newPlanName,
-          price: parseFloat(newPlanPrice),
-          duration: parseInt(newPlanDuration),
-        }])
-        .select()
-        .single();
-
+      const { error } = await supabase.from("gym_plans").insert([{
+        name,
+        price: Number(price),
+        duration: Number(duration),
+        duration_days: Number(duration) * 30,
+        gym_id: gymId,
+      }]);
       if (error) throw error;
-
-      setPlans([...plans, data]);
-      setNewPlanName("");
-      setNewPlanPrice("");
-      setNewPlanDuration("");
+      toast.success("Plan added!");
+      setPlanForm({ name: "", price: "", duration: "" });
       setIsAddingPlan(false);
-      toast.success("✅ Plan added successfully!");
-    } catch (error: any) {
-      toast.error(`Error: ${error.message}`);
+      await fetchPlans();
+    } catch (err: unknown) {
+      toast.error("Add plan failed: " + (err as Error).message);
     }
-  };
+  }, [planForm, gymId, fetchPlans]);
 
-  const handleUpdatePlan = async () => {
-    if (!editingPlan || !newPlanName || !newPlanPrice || !newPlanDuration) {
-      toast.error("Please fill in all fields");
-      return;
-    }
-
+  const handleUpdatePlan = useCallback(async () => {
+    if (!editingPlan) return;
+    const { name, price, duration } = planForm;
+    if (!name || !price || !duration) { toast.error("Fill all plan fields."); return; }
     try {
       const { error } = await supabase
         .from("gym_plans")
-        .update({
-          name: newPlanName,
-          price: parseFloat(newPlanPrice),
-          duration: parseInt(newPlanDuration),
-        })
+        .update({ name, plan_name: name, price: Number(price), duration: Number(duration) })
         .eq("id", editingPlan.id);
-
       if (error) throw error;
-
-      setPlans(plans.map(p => p.id === editingPlan.id ? { 
-        ...p, 
-        name: newPlanName,
-        price: parseFloat(newPlanPrice),
-        duration: parseInt(newPlanDuration)
-      } : p));
-      
+      setPlans((prev) => prev.map((p) => p.id === editingPlan.id
+        ? { ...p, name, plan_name: name, price: Number(price), duration: Number(duration) }
+        : p,
+      ));
       setEditingPlan(null);
-      setNewPlanName("");
-      setNewPlanPrice("");
-      setNewPlanDuration("");
-      toast.success("✅ Plan updated successfully!");
-    } catch (error: any) {
-      toast.error(`Error: ${error.message}`);
+      setPlanForm({ name: "", price: "", duration: "" });
+      toast.success("Plan updated!");
+    } catch (err: unknown) {
+      toast.error("Update plan failed: " + (err as Error).message);
     }
-  };
+  }, [editingPlan, planForm]);
 
-  const handleLogoClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      toast.success(`✅ ${file.name} uploaded successfully!`, {
-        position: "bottom-center",
-      });
-      // In a real app, you would upload the file to a server here
+  const handleDeletePlan = useCallback(async (id: string) => {
+    if (!window.confirm("Delete this plan?")) return;
+    try {
+      const { error } = await supabase.from("gym_plans").delete().eq("id", id);
+      if (error) throw error;
+      setPlans((prev) => prev.filter((p) => p.id !== id));
+      toast.success("Plan deleted.");
+    } catch (err: unknown) {
+      toast.error("Delete failed: " + (err as Error).message);
     }
-  };
+  }, []);
+
+  const startEditing = useCallback((plan: Plan) => {
+    setEditingPlan(plan);
+    setPlanForm({ name: plan.name ?? "", price: String(plan.price), duration: String(plan.duration) });
+    setIsAddingPlan(false);
+  }, []);
+
+  const cancelPlanForm = useCallback(() => {
+    setEditingPlan(null);
+    setIsAddingPlan(false);
+    setPlanForm({ name: "", price: "", duration: "" });
+  }, []);
+
+  // ── Billing ───────────────────────────────────────────────────────────────────
+  const handleStartTrial = useCallback(async () => {
+    if (!userId) return;
+    setIsProcessingBilling(true);
+    try {
+      const expiryDate = new Date();
+      expiryDate.setDate(expiryDate.getDate() + 30);
+      const updates = { plan_type: "Free" as const, plan_status: "Active" as const, expiry_date: expiryDate.toISOString() };
+      const { error } = await supabase.from("gym_settings").update(updates).eq("gym_owner_id", userId);
+      if (error) throw error;
+      setSettings((prev) => ({ ...prev, ...updates }));
+      toast.success("30-day Free Trial started!");
+    } catch (err: unknown) {
+      toast.error("Trial error: " + (err as Error).message);
+    } finally {
+      setIsProcessingBilling(false);
+    }
+  }, [userId]);
+
+  const handleGetPro = useCallback(async () => {
+    if (currency === "INR") {
+      if (!userId) return;
+      await initiatePhonePePayment(
+        1999,
+        userId,
+        async () => {
+          const success = await finalizeUpgrade(userId);
+          if (success) {
+            const { data } = await supabase.from("gym_settings").select("*").eq("gym_owner_id", userId).single();
+            if (data) setSettings(data);
+          }
+        },
+        setIsProcessingBilling,
+      );
+    } else {
+      const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
+      if (!STRIPE_KEY) { toast.error("Stripe key missing."); return; }
+      setIsProcessingBilling(true);
+      try {
+        const { loadStripe } = await import("@stripe/stripe-js");
+        const stripe = await loadStripe(STRIPE_KEY);
+        if (!stripe) throw new Error("Stripe failed to load.");
+        toast.info("Redirecting to Stripe...");
+        setTimeout(() => finalizeUpgrade(), 2000);
+      } catch (err: unknown) {
+        toast.error((err as Error).message);
+        setIsProcessingBilling(false);
+      }
+    }
+  }, [currency, userId]);
+
+  // ── Security / Support ────────────────────────────────────────────────────────
+  const handlePasswordReset = useCallback(async () => {
+    if (!settings.owner_email) { toast.error("Owner email not set."); return; }
+    const { error } = await supabase.auth.resetPasswordForEmail(settings.owner_email, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+    if (error) toast.error(error.message);
+    else toast.success("Password reset link sent!");
+  }, [settings.owner_email]);
+
+  // ── Derived ───────────────────────────────────────────────────────────────────
+  const logoFallback = (settings.gym_name || "RF")
+    .split(" ").filter(Boolean).slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "").join("") || "RF";
 
   const menuItems = [
     { name: "Gym Profile", icon: Building2 },
@@ -429,8 +726,28 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
     { name: "Help & Support", icon: HelpCircle },
   ];
 
+  const locationBusy = isDetectingLocation || isSearchingLocation || isSavingLocation;
+  const allMedia = [
+    ...(settings.gym_photos ?? []).map((url) => ({ url, type: "photo" as const })),
+    ...(settings.gym_videos ?? []).map((url) => ({ url, type: "video" as const })),
+  ];
+
+  // ── Loading state ─────────────────────────────────────────────────────────────
+  if (isLoadingSettings) {
+    return (
+      <div className="flex min-h-[22rem] items-center justify-center rounded-3xl border border-border bg-white shadow-soft">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-sm font-medium text-slate-600">Loading gym settings…</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-8 pb-10">
+      {/* Header */}
       <div>
         <h1 className="font-display text-3xl font-bold md:text-4xl">
           System <span className="text-gradient-brand">Settings</span>
@@ -441,28 +758,30 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
       </div>
 
       <div className="grid gap-8 lg:grid-cols-3">
-        {/* Navigation Sidebar */}
-        <div className="space-y-2">
-          {menuItems.map((item) => (
+        {/* Sidebar */}
+        <nav className="space-y-2">
+          {menuItems.map(({ name, icon: Icon }) => (
             <button
-              key={item.name}
-              onClick={() => setActiveCategory(item.name)}
-              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all ${
-                activeCategory === item.name 
-                  ? "bg-primary/10 text-primary font-bold border border-primary/20 shadow-sm" 
+              key={name}
+              onClick={() => setActiveCategory(name)}
+              className={`flex w-full items-center justify-between rounded-xl px-4 py-3 transition-all ${
+                activeCategory === name
+                  ? "border border-primary/20 bg-primary/10 font-bold text-primary shadow-sm"
                   : "text-muted-foreground hover:bg-white hover:text-slate-700"
               }`}
             >
-              <div className="flex items-center gap-3">
-                <item.icon className="h-4 w-4" />
-                <span className="text-sm">{item.name}</span>
-              </div>
-              <ChevronRight className={`h-4 w-4 transition-transform ${activeCategory === item.name ? "rotate-90" : "opacity-30"}`} />
+              <span className="flex items-center gap-3">
+                <Icon className="h-4 w-4" />
+                <span className="text-sm">{name}</span>
+              </span>
+              <ChevronRight
+                className={`h-4 w-4 transition-transform ${activeCategory === name ? "rotate-90" : "opacity-30"}`}
+              />
             </button>
           ))}
-        </div>
+        </nav>
 
-        {/* Content Area */}
+        {/* Content */}
         <div className="lg:col-span-2">
           <AnimatePresence mode="wait">
             <motion.div
@@ -473,106 +792,357 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
               transition={{ duration: 0.2 }}
               className="space-y-6"
             >
+              {/* ── GYM PROFILE ─────────────────────────────────────────────── */}
               {activeCategory === "Gym Profile" && (
                 <>
+                  {/* Hidden inputs */}
+                  <input ref={logoInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoChange} />
                   <input
+                    ref={galleryInputRef}
                     type="file"
-                    ref={fileInputRef}
+                    accept="image/*,.mp4,.mov,video/mp4,video/quicktime"
+                    multiple
                     className="hidden"
-                    accept="image/*"
-                    onChange={handleFileChange}
+                    onChange={handleGalleryChange}
                   />
+
+                  {/* Gym Info */}
                   <Card className="border-border bg-white shadow-soft">
                     <CardHeader>
                       <CardTitle className="text-lg font-bold text-slate-900">Gym Information</CardTitle>
                       <CardDescription>Update your public profile details.</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-6">
+                      {/* Logo */}
                       <div className="flex items-center gap-6">
-                        <div className="relative group">
-                          <div className="h-24 w-24 rounded-3xl bg-gradient-brand flex items-center justify-center font-bold text-3xl text-white shadow-glow">
-                            RF
+                        <div className="group relative">
+                          <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-3xl bg-gradient-brand text-3xl font-bold text-white shadow-glow">
+                            {settings.logo_url
+                              ? <img src={settings.logo_url} alt="gym logo" className="h-full w-full object-cover" />
+                              : logoFallback}
                           </div>
-                          <button 
-                            onClick={handleLogoClick}
-                            className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity rounded-3xl cursor-pointer"
+                          <button
+                            onClick={() => logoInputRef.current?.click()}
+                            className="absolute inset-0 flex cursor-pointer items-center justify-center rounded-3xl bg-black/60 opacity-0 transition-opacity group-hover:opacity-100"
                           >
                             <CameraIcon className="h-6 w-6 text-white" />
                           </button>
                         </div>
                         <div>
-                          <h4 className="font-bold text-slate-900">Royal Fitness Gym</h4>
-                          <p className="text-sm text-muted-foreground">Registered since Jan 2024</p>
-                          <Button 
-                            variant="link" 
-                            className="p-0 h-auto text-primary text-xs font-bold"
-                            onClick={handleLogoClick}
-                          >
+                          <h4 className="font-bold text-slate-900">{settings.gym_name}</h4>
+                          <p className="text-sm text-muted-foreground">{settings.owner_email || "Owner email not set"}</p>
+                          <Button variant="link" className="h-auto p-0 text-xs font-bold text-primary" onClick={() => logoInputRef.current?.click()}>
                             Change Logo
                           </Button>
                         </div>
                       </div>
 
+                      {/* Fields */}
                       <div className="grid gap-4 sm:grid-cols-2">
-                        <div className="space-y-2">
-                          <Label className="text-slate-600">Gym Name</Label>
-                          <Input 
-                            value={settings.gym_name} 
-                            onChange={(e) => handleUpdateSettings({ gym_name: e.target.value })}
-                            className="bg-slate-50 border-slate-200 rounded-xl" 
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-slate-600">City</Label>
-                          <Input 
-                            value={settings.city} 
-                            onChange={(e) => handleUpdateSettings({ city: e.target.value })}
-                            className="bg-slate-50 border-slate-200 rounded-xl" 
-                          />
-                        </div>
+                        {(
+                          [
+                            { label: "Gym Name", key: "gym_name", placeholder: "Royal Fitness" },
+                            { label: "Owner Name", key: "owner_name", placeholder: "e.g. Vivek Kumar" },
+                            { label: "City", key: "city", placeholder: "Mumbai" },
+                            { label: "Owner Email", key: "owner_email", placeholder: "owner@example.com" },
+                            { label: "Contact Number", key: "contact_number", placeholder: "+91 …" },
+                          ] as { label: string; key: keyof GymSettings; placeholder: string }[]
+                        ).map(({ label, key, placeholder }) => (
+                          <div key={key} className="space-y-2">
+                            <Label className="text-slate-600">{label}</Label>
+                            <Input
+                              value={(settings[key] as string) ?? ""}
+                              onChange={(e) => persistSettings({ [key]: e.target.value })}
+                              placeholder={placeholder}
+                              className="rounded-xl border-slate-200 bg-slate-50"
+                            />
+                          </div>
+                        ))}
+
                         <div className="space-y-2 sm:col-span-2">
                           <Label className="text-slate-600">Address</Label>
-                          <Input 
-                            value={settings.address} 
-                            onChange={(e) => handleUpdateSettings({ address: e.target.value })}
-                            className="bg-slate-50 border-slate-200 rounded-xl" 
+                          <Input
+                            value={settings.address}
+                            onChange={(e) => persistSettings({ address: e.target.value })}
+                            placeholder="123 Fitness Street"
+                            className="rounded-xl border-slate-200 bg-slate-50"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-slate-600">Opening Time</Label>
+                          <Input
+                            type="time"
+                            value={settings.opening_time}
+                            onChange={(e) => persistSettings({ opening_time: e.target.value })}
+                            className="rounded-xl border-slate-200 bg-slate-50"
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label className="text-slate-600">Owner Email</Label>
-                          <Input 
-                            value={settings.owner_email} 
-                            onChange={(e) => handleUpdateSettings({ owner_email: e.target.value })}
-                            className="bg-slate-50 border-slate-200 rounded-xl" 
+                          <Label className="text-slate-600">Closing Time</Label>
+                          <Input
+                            type="time"
+                            value={settings.closing_time}
+                            onChange={(e) => persistSettings({ closing_time: e.target.value })}
+                            className="rounded-xl border-slate-200 bg-slate-50"
                           />
                         </div>
-                        <div className="space-y-2">
-                          <Label className="text-slate-600">Contact Number</Label>
-                          <Input 
-                            value={settings.contact_number} 
-                            onChange={(e) => handleUpdateSettings({ contact_number: e.target.value })}
-                            className="bg-slate-50 border-slate-200 rounded-xl" 
+
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label className="text-slate-600">Description</Label>
+                          <textarea
+                            value={settings.description}
+                            onChange={(e) => persistSettings({ description: e.target.value })}
+                            rows={4}
+                            className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary/30"
                           />
                         </div>
                       </div>
                     </CardContent>
                   </Card>
 
+                  {/* Gallery */}
+                  <Card className="border-border bg-white shadow-soft">
+                    <CardHeader>
+                      <CardTitle className="text-lg font-bold text-slate-900">Gallery</CardTitle>
+                      <CardDescription>Upload photos and videos for your public gym profile.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="flex items-center gap-3">
+                        <Button
+                          onClick={() => galleryInputRef.current?.click()}
+                          disabled={isUploadingGallery}
+                          className="h-11 rounded-xl bg-slate-900 font-bold text-white"
+                        >
+                          {isUploadingGallery ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Uploading…</> : "Add Media"}
+                        </Button>
+                        <p className="text-sm text-muted-foreground">Images up to 25 MB · Videos up to 50 MB</p>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                        {allMedia.length === 0 ? (
+                          <div className="col-span-full rounded-2xl border border-dashed border-slate-100 px-4 py-8 text-center text-sm text-muted-foreground">
+                            No media yet. Add images or short videos to make your profile shine.
+                          </div>
+                        ) : allMedia.map(({ url, type }) => {
+                          const isVid = type === "video";
+                          return (
+                            <div key={url} className="relative overflow-hidden rounded-2xl border border-slate-100 bg-slate-50">
+                              {isVid
+                                ? <video src={url} className="h-32 w-full object-cover" controls preload="metadata" />
+                                : <img src={url} alt="gym media" className="h-32 w-full object-cover" />}
+                              <button
+                                onClick={() => handleRemoveMedia(url, type)}
+                                className="absolute right-2 top-2 rounded-full bg-white p-1 shadow-md"
+                              >
+                                <Trash2 className="h-4 w-4 text-red-600" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Location */}
+                  <Card className="border-border bg-white shadow-soft">
+                    <CardHeader>
+                      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                        <div>
+                          <CardTitle className="text-lg font-bold text-slate-900">Gym Location Setup</CardTitle>
+                          <CardDescription>Detect GPS or pin location directly on the map.</CardDescription>
+                        </div>
+                        <Badge className="w-fit rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                          <Crosshair className="mr-2 h-3 w-3" />
+                          Live coordinates
+                        </Badge>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-5">
+                      <div className="flex flex-col gap-3 md:flex-row">
+                        <Button
+                          onClick={detectLocation}
+                          disabled={locationBusy}
+                          className="h-12 rounded-2xl bg-gradient-brand px-5 font-bold text-primary-foreground shadow-soft"
+                        >
+                          {isDetectingLocation
+                            ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            : <LocateFixed className="mr-2 h-4 w-4" />}
+                          Detect My Location
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => toast.info("Click anywhere on the map to pin your gym.")}
+                          className="h-12 rounded-2xl border-slate-200 px-5 font-bold"
+                        >
+                          <MapPinned className="mr-2 h-4 w-4" />
+                          Choose on Map
+                        </Button>
+                      </div>
+
+                      {/* Map with search overlay */}
+                      <div className="relative overflow-hidden rounded-3xl border border-slate-200 bg-slate-50 shadow-sm">
+                        <div className="absolute left-3 right-3 top-3 z-[500]">
+                          <div className="flex gap-2 rounded-2xl border border-white/80 bg-white/95 p-2 shadow-soft backdrop-blur">
+                            <div className="relative flex-1">
+                              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                              <Input
+                                value={locationQuery}
+                                onChange={(e) => setLocationQuery(e.target.value)}
+                                onKeyDown={(e) => e.key === "Enter" && searchLocation()}
+                                placeholder="Search by street, area, or landmark"
+                                className="h-11 rounded-xl border-slate-200 bg-slate-50 pl-10 text-sm"
+                              />
+                            </div>
+                            <Button
+                              onClick={searchLocation}
+                              disabled={isSearchingLocation}
+                              className="h-11 rounded-xl bg-slate-900 px-4 font-bold text-white"
+                            >
+                              {isSearchingLocation
+                                ? <Loader2 className="h-4 w-4 animate-spin" />
+                                : <Navigation2 className="h-4 w-4" />}
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="h-80 w-full">
+                          <LeafletMap
+                            center={
+                              locationDraft.latitude !== null && locationDraft.longitude !== null
+                                ? [locationDraft.latitude, locationDraft.longitude]
+                                : ALIGARH_CENTER
+                            }
+                            zoom={13}
+                            className="h-full w-full"
+                          >
+                            {(lf) => {
+                              const { Marker, Popup, useMap, useMapEvents } = lf as {
+                                Marker: React.ComponentType<Record<string, unknown>>;
+                                Popup: React.ComponentType<{ children: React.ReactNode }>;
+                                useMap: () => { setView: (c: [number, number], z: number, o: Record<string, unknown>) => void };
+                                useMapEvents: (handlers: Record<string, unknown>) => null;
+                              };
+                              const L = lf.L as {
+                                divIcon: (opts: Record<string, unknown>) => unknown;
+                              };
+
+                              function MapController() {
+                                const map = useMap();
+                                useEffect(() => {
+                                  if (locationDraft.latitude !== null && locationDraft.longitude !== null) {
+                                    map.setView([locationDraft.latitude, locationDraft.longitude], 15, { animate: true });
+                                  }
+                                }, [map]);
+                                return null;
+                              }
+
+                              function ClickHandler() {
+                                useMapEvents({
+                                  click(e: { latlng: { lat: number; lng: number } }) {
+                                    pickLocation(e.latlng.lat, e.latlng.lng);
+                                  },
+                                });
+                                return null;
+                              }
+
+                              const pinIcon = L.divIcon({
+                                className: "custom-div-icon",
+                                html: `<div style="
+                                  width:28px;height:40px;position:relative;
+                                "><div style="
+                                  width:28px;height:28px;border-radius:50% 50% 50% 0;
+                                  background:#8B5CF6;transform:rotate(-45deg);
+                                  box-shadow:0 2px 8px rgba(139,92,246,0.5);
+                                "></div></div>`,
+                                iconSize: [28, 40],
+                                iconAnchor: [14, 40],
+                                popupAnchor: [0, -42],
+                              });
+
+                              return (
+                                <>
+                                  <MapController />
+                                  <ClickHandler />
+                                  {locationDraft.latitude !== null && locationDraft.longitude !== null && (
+                                    <Marker
+                                      position={[locationDraft.latitude, locationDraft.longitude]}
+                                      icon={pinIcon}
+                                    >
+                                      <Popup>
+                                        <div className="space-y-1">
+                                          <p className="text-sm font-bold text-slate-900">Selected Location</p>
+                                          <p className="text-xs text-slate-600">
+                                            {locationDraft.latitude.toFixed(5)}, {locationDraft.longitude.toFixed(5)}
+                                          </p>
+                                        </div>
+                                      </Popup>
+                                    </Marker>
+                                  )}
+                                </>
+                              );
+                            }}
+                          </LeafletMap>
+                        </div>
+                      </div>
+
+                      {/* Coordinates display */}
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label className="text-slate-600">Latitude</Label>
+                          <Input
+                            value={locationDraft.latitude !== null ? locationDraft.latitude.toFixed(6) : ""}
+                            disabled
+                            placeholder="Pick a point on the map"
+                            className="rounded-xl border-slate-200 bg-slate-50 text-slate-900"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-slate-600">Longitude</Label>
+                          <Input
+                            value={locationDraft.longitude !== null ? locationDraft.longitude.toFixed(6) : ""}
+                            disabled
+                            placeholder="Pick a point on the map"
+                            className="rounded-xl border-slate-200 bg-slate-50 text-slate-900"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 md:flex-row md:items-center md:justify-between">
+                        <div className="space-y-1">
+                          <p className="text-sm font-semibold text-slate-900">Need a quick adjustment?</p>
+                          <p className="text-xs text-muted-foreground">Click anywhere on the map to move the pin.</p>
+                        </div>
+                        <Button
+                          onClick={saveLocation}
+                          disabled={isSavingLocation || locationDraft.latitude === null || locationDraft.longitude === null}
+                          className="h-11 rounded-2xl bg-[#8B5CF6] px-5 font-bold text-white hover:bg-[#7C3AED]"
+                        >
+                          {isSavingLocation
+                            ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            : <Zap className="mr-2 h-4 w-4" />}
+                          Save Gym Location
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Kiosk Mode */}
                   <Card className="border-border bg-white shadow-soft">
                     <CardHeader>
                       <CardTitle className="text-lg font-bold text-slate-900">Kiosk Mode</CardTitle>
-                      <CardDescription>Setup a dedicated check-in station for your members.</CardDescription>
+                      <CardDescription>Dedicated check-in station for members.</CardDescription>
                     </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex flex-col items-center gap-4 text-center">
+                    <CardContent>
+                      <div className="flex flex-col items-center gap-4 rounded-2xl border border-slate-100 bg-slate-50 p-4 text-center">
                         <Monitor className="h-10 w-10 text-primary" />
                         <div className="space-y-1">
                           <p className="text-sm font-bold text-slate-900">Launch Fullscreen Kiosk</p>
-                          <p className="text-xs text-muted-foreground">Opens the dedicated check-in interface in a new window. Perfect for tablets or front-desk monitors.</p>
+                          <p className="text-xs text-muted-foreground">Perfect for tablets or front-desk monitors.</p>
                         </div>
-                        <Button 
-                          onClick={() => window.open('/kiosk', '_blank')}
-                          className="w-full rounded-xl bg-slate-900 text-white font-bold h-12 shadow-lg hover:shadow-slate-200 transition-all"
+                        <Button
+                          onClick={() => window.open("/kiosk", "_blank")}
+                          className="h-12 w-full rounded-xl bg-slate-900 font-bold text-white shadow-lg"
                         >
                           Launch Kiosk Mode
                         </Button>
@@ -580,54 +1150,49 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                     </CardContent>
                   </Card>
 
+                  {/* Preferences */}
                   <Card className="border-border bg-white shadow-soft">
                     <CardHeader>
                       <CardTitle className="text-lg font-bold text-slate-900">Preferences</CardTitle>
                       <CardDescription>Control your dashboard experience.</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                      {hasAccess(settings.plan_type, 'auto_reminders') ? (
+                      {hasAccess(settings.plan_type, "auto_reminders") ? (
                         <div className="flex items-center justify-between">
                           <div className="space-y-0.5">
-                            <Label className="text-slate-900 font-medium">Automatic Reminders</Label>
-                            <p className="text-xs text-muted-foreground">Send WhatsApp links automatically when dues are overdue.</p>
+                            <Label className="font-medium text-slate-900">Automatic Reminders</Label>
+                            <p className="text-xs text-muted-foreground">Send WhatsApp reminders when dues are overdue.</p>
                           </div>
-                          <Switch 
-                            checked={settings.whatsapp_reminders} 
-                            onCheckedChange={(checked) => handleUpdateSettings({ whatsapp_reminders: checked })}
-                            className="data-[state=checked]:bg-primary" 
+                          <Switch
+                            checked={settings.whatsapp_reminders}
+                            onCheckedChange={(checked) => persistSettings({ whatsapp_reminders: checked })}
+                            className="data-[state=checked]:bg-primary"
                           />
                         </div>
                       ) : (
                         <div className="flex items-center justify-between opacity-60">
                           <div className="space-y-0.5">
                             <div className="flex items-center gap-2">
-                              <Label className="text-slate-900 font-medium">Automatic Reminders</Label>
-                              <Badge className="bg-amber-100 text-amber-700 border-none text-[8px] h-4">PRO</Badge>
+                              <Label className="font-medium text-slate-900">Automatic Reminders</Label>
+                              <Badge className="h-4 border-none bg-amber-100 text-[8px] text-amber-700">PRO</Badge>
                             </div>
                             <p className="text-xs text-muted-foreground">WhatsApp reminders are a Pro feature.</p>
                           </div>
-                          <Button 
-                            variant="ghost" 
-                            size="sm" 
-                            onClick={() => setActiveCategory("Billing & Plans")}
-                            className="text-primary font-bold text-xs"
-                          >
-                            <Lock className="h-3 w-3 mr-1" />
-                            Unlock
+                          <Button variant="ghost" size="sm" onClick={() => setActiveCategory("Billing & Plans")} className="text-xs font-bold text-primary">
+                            <Lock className="mr-1 h-3 w-3" /> Unlock
                           </Button>
                         </div>
                       )}
                       <div className="h-px bg-slate-100" />
                       <div className="flex items-center justify-between">
                         <div className="space-y-0.5">
-                          <Label className="text-slate-900 font-medium">Daily Summary Email</Label>
-                          <p className="text-xs text-muted-foreground">Receive a report of attendance and payments every morning.</p>
+                          <Label className="font-medium text-slate-900">Daily Summary Email</Label>
+                          <p className="text-xs text-muted-foreground">Receive attendance and payment report every morning.</p>
                         </div>
-                        <Switch 
-                          checked={settings.daily_summary_email} 
-                          onCheckedChange={(checked) => handleUpdateSettings({ daily_summary_email: checked })}
-                          className="data-[state=checked]:bg-primary" 
+                        <Switch
+                          checked={settings.daily_summary_email}
+                          onCheckedChange={(checked) => persistSettings({ daily_summary_email: checked })}
+                          className="data-[state=checked]:bg-primary"
                         />
                       </div>
                     </CardContent>
@@ -635,6 +1200,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                 </>
               )}
 
+              {/* ── SECURITY ────────────────────────────────────────────────── */}
               {activeCategory === "Security" && (
                 <Card className="border-border bg-white shadow-soft">
                   <CardHeader>
@@ -642,17 +1208,14 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                       <Lock className="h-5 w-5 text-primary" />
                       <CardTitle className="text-lg font-bold text-slate-900">Security Settings</CardTitle>
                     </div>
-                    <CardDescription>Manage your password and authentication methods.</CardDescription>
+                    <CardDescription>Manage your password and authentication.</CardDescription>
                   </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 space-y-4">
-                      <p className="text-sm text-slate-600 text-center">
-                        For your security, you can reset your password by clicking the button below. A reset link will be sent to <strong>{settings.owner_email}</strong>.
+                  <CardContent>
+                    <div className="space-y-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                      <p className="text-center text-sm text-slate-600">
+                        A reset link will be sent to <strong>{settings.owner_email}</strong>.
                       </p>
-                      <Button 
-                        onClick={handlePasswordReset}
-                        className="w-full rounded-xl bg-slate-900 text-white font-bold h-12 shadow-lg hover:shadow-slate-200 transition-all"
-                      >
+                      <Button onClick={handlePasswordReset} className="h-12 w-full rounded-xl bg-slate-900 font-bold text-white shadow-lg">
                         Send Reset Link
                       </Button>
                     </div>
@@ -660,6 +1223,20 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                 </Card>
               )}
 
+              {/* ── NOTIFICATIONS ───────────────────────────────────────────── */}
+              {activeCategory === "Notifications" && (
+                <Card className="border-border bg-white py-20 shadow-soft">
+                  <CardContent className="space-y-3 text-center">
+                    <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+                      <Settings className="h-6 w-6 animate-spin-slow" />
+                    </div>
+                    <h3 className="font-bold text-slate-900">Notifications — Coming Soon</h3>
+                    <p className="text-sm text-muted-foreground">We're fine-tuning these settings for you.</p>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* ── HELP & SUPPORT ──────────────────────────────────────────── */}
               {activeCategory === "Help & Support" && (
                 <Card className="border-border bg-white shadow-soft">
                   <CardHeader>
@@ -667,34 +1244,34 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                       <MessageSquare className="h-5 w-5 text-primary" />
                       <CardTitle className="text-lg font-bold text-slate-900">Contact Support</CardTitle>
                     </div>
-                    <CardDescription>Need help? Our team is available 24/7.</CardDescription>
+                    <CardDescription>Our team is available 24/7.</CardDescription>
                   </CardHeader>
-                    <CardContent className="space-y-4 text-center py-10">
-                    <p className="text-muted-foreground">Have questions about Gymphony?</p>
-                    <div className="flex flex-col gap-3 max-w-xs mx-auto">
-                      {hasAccess(settings.plan_type, 'whatsapp_support') ? (
-                        <Button 
+                  <CardContent className="py-10 text-center">
+                    <p className="mb-6 text-muted-foreground">Have questions about Gymphony?</p>
+                    <div className="mx-auto flex max-w-xs flex-col gap-3">
+                      {hasAccess(settings.plan_type, "whatsapp_support") ? (
+                        <Button
                           onClick={() => {
-                            const supportPhone = settings.contact_number?.replace(/\D/g, '') || "7906240659";
-                            window.open(`https://wa.me/${supportPhone}?text=${encodeURIComponent("Hi, I need support with my gym dashboard.")}`, '_blank');
+                            const phone = settings.contact_number.replace(/\D/g, "") || "7906240659";
+                            window.open(`https://wa.me/${phone}?text=${encodeURIComponent("Hi, I need support with my gym dashboard.")}`, "_blank");
                           }}
-                          className="rounded-xl bg-primary text-white font-bold px-8 shadow-lg shadow-primary/20"
+                          className="rounded-xl bg-primary px-8 font-bold text-white shadow-lg shadow-primary/20"
                         >
-                          Chat with Us on WhatsApp
+                          Chat on WhatsApp
                         </Button>
                       ) : (
-                        <Button 
+                        <Button
                           onClick={() => setActiveCategory("Billing & Plans")}
-                          className="rounded-xl bg-amber-500 text-white font-bold px-8 shadow-lg shadow-amber-200 flex items-center justify-center gap-2"
+                          className="flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-8 font-bold text-white shadow-lg shadow-amber-200"
                         >
                           <Crown className="h-4 w-4" />
                           Unlock WhatsApp Support
                         </Button>
                       )}
-                      <Button 
+                      <Button
                         variant="outline"
-                        onClick={handleSupportEmail}
-                        className="rounded-xl border-slate-200 text-slate-900 font-bold px-8"
+                        onClick={() => { window.location.href = `mailto:support@gymphony.com?subject=${encodeURIComponent("Support Request - Gymphony")}`; }}
+                        className="rounded-xl border-slate-200 font-bold text-slate-900"
                       >
                         Email Support
                       </Button>
@@ -703,142 +1280,122 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                 </Card>
               )}
 
+              {/* ── BILLING & PLANS ─────────────────────────────────────────── */}
               {activeCategory === "Billing & Plans" && (
                 <div className="space-y-8">
-                  {/* Current Subscription Status Header */}
-                  <div className="bg-white border border-slate-100 rounded-[2rem] p-6 shadow-soft flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  {/* Subscription status */}
+                  <div className="flex flex-col gap-4 rounded-[2rem] border border-slate-100 bg-white p-6 shadow-soft md:flex-row md:items-center md:justify-between">
                     <div className="flex items-center gap-4">
-                      <div className={`h-12 w-12 rounded-2xl flex items-center justify-center ${settings.plan_type === 'Pro' ? 'bg-primary/10 text-primary' : 'bg-slate-100 text-slate-400'}`}>
-                        {settings.plan_type === 'Pro' ? <Crown className="h-6 w-6" /> : <ShieldCheck className="h-6 w-6" />}
+                      <div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${settings.plan_type === "Pro" ? "bg-primary/10 text-primary" : "bg-slate-100 text-slate-400"}`}>
+                        {settings.plan_type === "Pro" ? <Crown className="h-6 w-6" /> : <ShieldCheck className="h-6 w-6" />}
                       </div>
                       <div>
                         <div className="flex items-center gap-2">
                           <h3 className="text-lg font-black text-slate-900">Current Subscription</h3>
-                          <Badge className={`rounded-full px-3 py-0.5 border-none font-black text-[10px] uppercase tracking-widest ${
-                            settings.plan_type === 'Pro' ? 'bg-primary text-white shadow-glow' : 'bg-slate-100 text-slate-500'
+                          <Badge className={`rounded-full border-none px-3 py-0.5 text-[10px] font-black uppercase tracking-widest ${
+                            settings.plan_type === "Pro" ? "bg-primary text-white shadow-glow" : "bg-slate-100 text-slate-500"
                           }`}>
-                            {settings.plan_type === 'Pro' ? 'Active: PRO' : 'Free Trial'}
+                            {settings.plan_type === "Pro" ? "Active: PRO" : "Free Trial"}
                           </Badge>
                         </div>
-                        <p className="text-sm text-muted-foreground font-medium mt-0.5">
-                          {settings.plan_type === 'Pro' && settings.expiry_date ? (
-                            <>Next billing date: <span className="text-slate-900 font-bold">{new Date(settings.expiry_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span></>
-                          ) : (
-                            "Upgrade to unlock unlimited members and automation."
-                          )}
+                        <p className="mt-0.5 text-sm font-medium text-muted-foreground">
+                          {settings.plan_type === "Pro" && settings.expiry_date
+                            ? <>Next billing: <span className="font-bold text-slate-900">{new Date(settings.expiry_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span></>
+                            : "Upgrade to unlock unlimited members and automation."}
                         </p>
                       </div>
                     </div>
-                    {settings.plan_type !== 'Pro' && (
-                      <Button 
+                    {settings.plan_type !== "Pro" && (
+                      <Button
                         onClick={handleGetPro}
                         disabled={isProcessingBilling}
-                        className="rounded-xl bg-primary text-white font-black px-6 h-12 shadow-glow hover:shadow-primary/30 transition-all"
+                        className="h-12 rounded-xl bg-primary px-6 font-black text-white shadow-glow"
                       >
                         {isProcessingBilling ? <Loader2 className="h-5 w-5 animate-spin" /> : "Upgrade Now"}
                       </Button>
                     )}
                   </div>
 
-                  {/* Plan Comparison Grid */}
+                  {/* Plan cards */}
                   <div className="grid gap-6 md:grid-cols-2">
-                    {/* Free Plan */}
-                    <Card className={`relative border-border shadow-soft overflow-hidden flex flex-col ${settings.plan_type === 'Free' ? 'ring-2 ring-primary border-primary/20' : 'bg-white'}`}>
+                    {/* Free */}
+                    <Card className={`flex flex-col overflow-hidden border-border shadow-soft ${settings.plan_type === "Free" ? "border-primary/20 ring-2 ring-primary" : "bg-white"}`}>
                       <CardHeader className="pb-4">
                         <CardTitle className="text-xl font-bold text-slate-900">Free Trial</CardTitle>
-                        <div className="flex items-baseline gap-1 mt-2">
+                        <div className="mt-2 flex items-baseline gap-1">
                           <span className="text-4xl font-black text-slate-900">₹0</span>
-                          <span className="text-sm text-muted-foreground font-medium">for 1 month</span>
+                          <span className="text-sm font-medium text-muted-foreground">for 1 month</span>
                         </div>
-                        <CardDescription className="pt-2 text-slate-500 leading-relaxed">Everything in Pro. No card required. Cancel anytime.</CardDescription>
+                        <CardDescription className="pt-2 leading-relaxed text-slate-500">Everything in Pro. No card required. Cancel anytime.</CardDescription>
                       </CardHeader>
-
                       <CardContent className="pt-0">
-                        <Button 
-                          variant="outline" 
+                        <Button
+                          variant="outline"
                           onClick={handleStartTrial}
-                          disabled={isProcessingBilling || settings.plan_type === 'Free' || !!settings.expiry_date}
-                          className="w-full h-12 rounded-full border-slate-200 text-slate-900 font-bold hover:bg-slate-50"
+                          disabled={isProcessingBilling || settings.plan_type === "Free" || !!settings.expiry_date}
+                          className="h-12 w-full rounded-full border-slate-200 font-bold text-slate-900"
                         >
-                          {settings.plan_type === 'Free' ? "Currently Active" : "Start Free Trial"}
+                          {settings.plan_type === "Free" ? "Currently Active" : "Start Free Trial"}
                         </Button>
                       </CardContent>
-
-                      <CardContent className="flex-grow space-y-4">
+                      <CardContent className="grow">
                         <div className="space-y-4 pt-4">
-                          {[
-                            { text: "Up to 100 members", icon: CheckCircle2 },
-                            { text: "Smart payments + UPI", icon: CheckCircle2 },
-                            { text: "QR attendance", icon: CheckCircle2 },
-                            { text: "Live dashboard", icon: CheckCircle2 },
-                            { text: "Email support", icon: CheckCircle2 }
-                          ].map((feat, i) => (
-                            <div key={i} className="flex items-center gap-3 text-sm text-slate-600 font-medium">
-                              <div className="h-5 w-5 rounded-full bg-primary/5 flex items-center justify-center">
-                                <feat.icon className="h-3 w-3 text-primary shrink-0" />
+                          {["Up to 100 members", "Smart payments + UPI", "QR attendance", "Live dashboard", "Email support"].map((f) => (
+                            <div key={f} className="flex items-center gap-3 text-sm font-medium text-slate-600">
+                              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/5">
+                                <CheckCircle2 className="h-3 w-3 shrink-0 text-primary" />
                               </div>
-                              {feat.text}
+                              {f}
                             </div>
                           ))}
                         </div>
                       </CardContent>
                     </Card>
 
-                    {/* Pro Plan */}
-                    <Card className={`relative border-none shadow-glow overflow-hidden flex flex-col bg-gradient-to-b from-[#1a1a2e] to-[#16213e] text-white ${settings.plan_type === 'Pro' ? 'ring-4 ring-primary/30' : ''}`}>
-                      <div className="absolute top-4 right-4">
-                        <Badge className="bg-primary text-white border-none text-[10px] font-bold px-3 py-1 flex items-center gap-1">
-                          <Sparkles className="h-3 w-3" />
-                          Most popular
+                    {/* Pro */}
+                    <Card className={`relative flex flex-col overflow-hidden border-none bg-linear-to-b from-[#1a1a2e] to-[#16213e] text-white shadow-glow ${settings.plan_type === "Pro" ? "ring-4 ring-primary/30" : ""}`}>
+                      <div className="absolute right-4 top-4">
+                        <Badge className="flex items-center gap-1 border-none bg-primary px-3 py-1 text-[10px] font-bold text-white">
+                          <Sparkles className="h-3 w-3" />Most popular
                         </Badge>
                       </div>
-                      
                       <CardHeader className="pb-4">
                         <CardTitle className="text-xl font-bold text-white">Pro</CardTitle>
-                        <div className="flex items-baseline gap-1 mt-2">
+                        <div className="mt-2 flex items-baseline gap-1">
                           <span className="text-4xl font-black text-white">₹1,999</span>
-                          <span className="text-sm text-slate-400 font-medium">/ month</span>
+                          <span className="text-sm font-medium text-slate-400">/ month</span>
                         </div>
-                        <CardDescription className="pt-2 text-slate-400 leading-relaxed">For serious gym owners ready to automate and grow.</CardDescription>
+                        <CardDescription className="pt-2 leading-relaxed text-slate-400">For serious gym owners ready to automate and grow.</CardDescription>
                       </CardHeader>
-                      
                       <CardContent className="pt-0">
-                        {settings.plan_type === 'Pro' ? (
-                          <Button 
-                            onClick={() => toast.info("Subscription management coming soon!")}
-                            className="w-full h-14 rounded-full bg-white text-slate-900 font-black hover:bg-slate-100 transition-all shadow-xl"
-                          >
+                        {settings.plan_type === "Pro" ? (
+                          <Button onClick={() => toast.info("Subscription management coming soon!")} className="h-14 w-full rounded-full bg-white font-black text-slate-900 shadow-xl">
                             Active Subscription
                           </Button>
                         ) : (
-                          <Button 
-                            onClick={handleGetPro}
-                            disabled={isProcessingBilling}
-                            className="w-full h-14 rounded-full bg-primary text-white font-black hover:shadow-glow transition-all text-lg"
-                          >
+                          <Button onClick={handleGetPro} disabled={isProcessingBilling} className="h-14 w-full rounded-full bg-primary text-lg font-black text-white">
                             {isProcessingBilling ? <Loader2 className="h-5 w-5 animate-spin" /> : "Get Pro"}
                           </Button>
                         )}
                       </CardContent>
-
-                      <CardContent className="flex-grow space-y-4">
+                      <CardContent className="grow">
                         <div className="space-y-4 pt-4">
                           {[
-                            { text: "Unlimited members", icon: CheckCircle2 },
-                            { text: "Smart payments + auto reminders", icon: CheckCircle2 },
-                            { text: "QR attendance + alerts", icon: CheckCircle2 },
-                            { text: "Kiosk mode for check-ins", icon: CheckCircle2 },
-                            { text: "Inventory & stock management", icon: CheckCircle2 },
-                            { text: "Live dashboard & analytics", icon: CheckCircle2 },
-                            { text: "City discovery + leaderboard", icon: CheckCircle2 },
-                            { text: "Public gym profile page", icon: CheckCircle2 },
-                            { text: "Priority WhatsApp support", icon: CheckCircle2 }
-                          ].map((feat, i) => (
-                            <div key={i} className="flex items-center gap-3 text-sm text-slate-300 font-medium">
-                              <div className="h-5 w-5 rounded-full bg-white/10 flex items-center justify-center">
-                                <feat.icon className="h-3 w-3 text-primary shrink-0" />
+                            "Unlimited members",
+                            "Smart payments + auto reminders",
+                            "QR attendance + alerts",
+                            "Kiosk mode for check-ins",
+                            "Inventory & stock management",
+                            "Live dashboard & analytics",
+                            "City discovery + leaderboard",
+                            "Public gym profile page",
+                            "Priority WhatsApp support",
+                          ].map((f) => (
+                            <div key={f} className="flex items-center gap-3 text-sm font-medium text-slate-300">
+                              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-white/10">
+                                <CheckCircle2 className="h-3 w-3 shrink-0 text-primary" />
                               </div>
-                              {feat.text}
+                              {f}
                             </div>
                           ))}
                         </div>
@@ -846,26 +1403,18 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                     </Card>
                   </div>
 
+                  {/* Gym Plans CRUD */}
                   <Card className="border-border bg-white shadow-soft">
                     <CardHeader className="flex flex-row items-center justify-between space-y-0">
                       <div>
                         <CardTitle className="text-lg font-bold text-slate-900">Gym Plans</CardTitle>
-                        <CardDescription>Manage your membership plans and pricing.</CardDescription>
+                        <CardDescription>Manage membership plans and pricing.</CardDescription>
                       </div>
-                      <Button 
-                        onClick={() => {
-                          if (editingPlan) {
-                            setEditingPlan(null);
-                            setNewPlanName("");
-                            setNewPlanPrice("");
-                            setNewPlanDuration("");
-                          } else {
-                            setIsAddingPlan(!isAddingPlan);
-                          }
-                        }}
-                        className="rounded-xl bg-primary text-white font-bold h-9"
+                      <Button
+                        onClick={isAddingPlan || editingPlan ? cancelPlanForm : () => setIsAddingPlan(true)}
+                        className="h-9 rounded-xl bg-primary font-bold text-white"
                       >
-                        {isAddingPlan || editingPlan ? "Cancel" : <><Plus className="h-4 w-4 mr-2" /> Add Plan</>}
+                        {isAddingPlan || editingPlan ? "Cancel" : <><Plus className="mr-2 h-4 w-4" />Add Plan</>}
                       </Button>
                     </CardHeader>
                     <CardContent className="space-y-6">
@@ -875,136 +1424,114 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                             initial={{ opacity: 0, height: 0 }}
                             animate={{ opacity: 1, height: "auto" }}
                             exit={{ opacity: 0, height: 0 }}
-                            className="bg-slate-50 rounded-2xl p-6 border border-slate-100 space-y-4 overflow-hidden"
+                            className="overflow-hidden rounded-2xl border border-slate-100 bg-slate-50 p-6"
                           >
                             <div className="grid gap-4 sm:grid-cols-3">
                               <div className="space-y-2">
                                 <Label className="text-slate-600">Plan Name</Label>
-                                <Input 
-                                  placeholder="e.g. Pro Monthly" 
-                                  value={newPlanName}
-                                  onChange={(e) => setNewPlanName(e.target.value)}
-                                  className="bg-white border-slate-200 rounded-xl" 
+                                <Input
+                                  placeholder="e.g. Pro Monthly"
+                                  value={planForm.name}
+                                  onChange={(e) => setPlanForm((p) => ({ ...p, name: e.target.value }))}
+                                  className="rounded-xl border-slate-200 bg-white"
                                 />
                               </div>
                               <div className="space-y-2">
                                 <Label className="text-slate-600">Price (₹)</Label>
-                                <Input 
+                                <Input
                                   type="number"
-                                  placeholder="2000" 
-                                  value={newPlanPrice}
-                                  onChange={(e) => setNewPlanPrice(e.target.value)}
-                                  className="bg-white border-slate-200 rounded-xl" 
+                                  min={0}
+                                  placeholder="2000"
+                                  value={planForm.price}
+                                  onChange={(e) => setPlanForm((p) => ({ ...p, price: e.target.value }))}
+                                  className="rounded-xl border-slate-200 bg-white"
                                 />
                               </div>
                               <div className="space-y-2">
                                 <Label className="text-slate-600">Duration (Months)</Label>
-                                <Input 
+                                <Input
                                   type="number"
-                                  placeholder="1" 
-                                  value={newPlanDuration}
-                                  onChange={(e) => setNewPlanDuration(e.target.value)}
-                                  className="bg-white border-slate-200 rounded-xl" 
+                                  min={1}
+                                  placeholder="1"
+                                  value={planForm.duration}
+                                  onChange={(e) => setPlanForm((p) => ({ ...p, duration: e.target.value }))}
+                                  className="rounded-xl border-slate-200 bg-white"
                                 />
                               </div>
                             </div>
-                            <div className="flex justify-end">
-                              <Button 
+                            <div className="mt-4 flex justify-end">
+                              <Button
                                 onClick={editingPlan ? handleUpdatePlan : handleAddPlan}
-                                className="rounded-xl bg-gradient-brand text-primary-foreground font-bold px-6"
+                                className="rounded-xl bg-gradient-brand px-6 font-bold text-primary-foreground"
                               >
-                                {editingPlan ? "Update Plan" : "Create Plan"}
+                                {editingPlan ? "Update Plan" : "Add Plan"}
                               </Button>
                             </div>
                           </motion.div>
                         )}
                       </AnimatePresence>
 
-                      <div className="space-y-3">
-                        {isLoadingPlans ? (
-                          <div className="flex flex-col items-center justify-center py-10 space-y-2">
-                            <Loader2 className="h-8 w-8 text-primary animate-spin" />
-                            <p className="text-sm text-muted-foreground">Loading your plans...</p>
-                          </div>
-                        ) : plans.length === 0 ? (
-                          <div className="text-center py-10 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
-                            <CreditCard className="h-10 w-10 text-slate-300 mx-auto mb-3" />
-                            <h4 className="font-bold text-slate-900">No Plans Yet</h4>
-                            <p className="text-sm text-muted-foreground">Create your first gym membership plan.</p>
-                          </div>
-                        ) : (
-                          <div className="grid gap-4">
-                            {plans.map((plan) => (
-                              <div 
-                                key={plan.id}
-                                className="flex items-center justify-between p-4 bg-white border border-slate-100 rounded-2xl hover:border-primary/20 transition-all shadow-sm group"
-                              >
-                                <div className="flex items-center gap-4">
-                                  <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
-                                    <CreditCard className="h-5 w-5" />
-                                  </div>
-                                  <div>
-                                    <h4 className="font-bold text-slate-900">{plan.name}</h4>
-                                    <p className="text-xs text-muted-foreground">
-                                      ₹{plan.price.toLocaleString()} • {plan.duration} {plan.duration === 1 ? 'Month' : 'Months'}
-                                    </p>
-                                  </div>
+                      {isLoadingPlans ? (
+                        <div className="flex flex-col items-center justify-center gap-2 py-10">
+                          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                          <p className="text-sm text-muted-foreground">Loading plans…</p>
+                        </div>
+                      ) : plans.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 py-10 text-center">
+                          <CreditCard className="mx-auto mb-3 h-10 w-10 text-slate-300" />
+                          <h4 className="font-bold text-slate-900">No Plans Yet</h4>
+                          <p className="text-sm text-muted-foreground">Create your first membership plan.</p>
+                        </div>
+                      ) : (
+                        <div className="grid gap-4">
+                          {plans.map((plan) => (
+                            <div
+                              key={plan.id}
+                              className="flex items-center justify-between rounded-2xl border border-slate-100 bg-white p-4 shadow-sm transition-all hover:border-primary/20"
+                            >
+                              <div className="flex items-center gap-4">
+                                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                                  <CreditCard className="h-5 w-5" />
                                 </div>
-                                <div className="flex items-center gap-2">
-                                  <Button 
-                                    variant="ghost" 
-                                    size="icon"
-                                    onClick={() => startEditing(plan)}
-                                    className="h-9 w-9 rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/5"
-                                  >
-                                    <Edit2 className="h-4 w-4" />
-                                  </Button>
-                                  <Button 
-                                    variant="ghost" 
-                                    size="icon"
-                                    onClick={() => handleDeletePlan(plan.id)}
-                                    className="h-9 w-9 rounded-xl text-muted-foreground hover:text-red-500 hover:bg-red-50"
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
+                                <div>
+                                  <h4 className="font-bold text-slate-900">{plan.name}</h4>
+                                  <p className="text-xs text-muted-foreground">
+                                    ₹{plan.price.toLocaleString()} · {plan.duration} {plan.duration === 1 ? "Month" : "Months"}
+                                  </p>
                                 </div>
                               </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                              <div className="flex items-center gap-2">
+                                <Button variant="ghost" size="icon" onClick={() => startEditing(plan)} className="h-9 w-9 rounded-xl text-muted-foreground hover:bg-primary/5 hover:text-primary">
+                                  <Edit2 className="h-4 w-4" />
+                                </Button>
+                                <Button variant="ghost" size="icon" onClick={() => handleDeletePlan(plan.id)} className="h-9 w-9 rounded-xl text-muted-foreground hover:bg-red-50 hover:text-red-500">
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 </div>
               )}
 
-              {activeCategory === "Notifications" && (
-                <Card className="border-border bg-white shadow-soft py-20">
-                  <CardContent className="text-center space-y-3">
-                    <div className="h-12 w-12 bg-primary/10 rounded-full flex items-center justify-center mx-auto text-primary">
-                      <Settings className="h-6 w-6 animate-spin-slow" />
-                    </div>
-                    <h3 className="font-bold text-slate-900">{activeCategory} Coming Soon</h3>
-                    <p className="text-sm text-muted-foreground">We're fine-tuning these settings for you.</p>
-                  </CardContent>
-                </Card>
-              )}
-
+              {/* ── Save bar ─────────────────────────────────────────────────── */}
               <div className="flex justify-end gap-3 pt-4">
-                <Button 
-                  variant="ghost" 
+                <Button
+                  variant="ghost"
                   className="rounded-xl text-muted-foreground hover:bg-slate-50"
-                  onClick={() => currentUserId && fetchSettings(currentUserId, settings.owner_email)}
+                  onClick={() => userId && fetchSettings(userId, settings.owner_email)}
                 >
                   Discard
                 </Button>
-                <Button 
-                  onClick={handleSave} 
+                <Button
+                  onClick={() => persistSettings(settings).then((ok) => ok && toast.success("Settings saved!"))}
                   disabled={isSaving}
-                  className="rounded-xl bg-gradient-brand text-primary-foreground font-bold shadow-glow hover:shadow-primary/40 px-8"
+                  className="rounded-xl bg-gradient-brand px-8 font-bold text-primary-foreground shadow-glow hover:shadow-primary/40"
                 >
-                  {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                  {isSaving ? "Saving..." : "Save Changes"}
+                  {isSaving ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving…</> : <><Save className="mr-2 h-4 w-4" />Save Changes</>}
                 </Button>
               </div>
             </motion.div>
@@ -1014,4 +1541,3 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
     </div>
   );
 }
-

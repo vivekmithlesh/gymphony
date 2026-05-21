@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { motion } from "framer-motion";
-import { ArrowRight, Building2, Mail, MapPin, Phone, Sparkles, Loader2, Check, ChevronsUpDown, Lock } from "lucide-react";
+import { ArrowRight, Building2, Mail, MapPin, Sparkles, Loader2, Check, ChevronsUpDown, Lock } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -27,12 +27,18 @@ import * as z from "zod";
 import { supabase } from "@/supabase";
 import { toast } from "sonner";
 import { useState, useRef, useEffect } from "react";
+import { getDashboardPathForRole, resolveUserRole } from "@/lib/auth-role";
+import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
+import { INTERNATIONAL_PHONE_REGEX, cleanPhoneInput, normalizeToE164Phone } from "@/lib/phone";
 
 const signupSchema = z.object({
   gymName: z.string().min(2, "Gym name must be at least 2 characters"),
   city: z.string().min(2, "City must be at least 2 characters"),
   email: z.string().email("Please enter a valid email address"),
-  mobile: z.string().regex(/^[0-9]{10}$/, "Please enter a valid 10-digit mobile number"),
+  mobile: z
+    .string()
+    .transform((value) => cleanPhoneInput(value))
+    .refine((value) => INTERNATIONAL_PHONE_REGEX.test(value), "Please enter a valid international mobile number"),
   password: z.string().min(6, "Password must be at least 6 characters"),
 });
 
@@ -77,6 +83,9 @@ export const Route = createFileRoute("/signup")({
 
 function SignupPage() {
   const navigate = useNavigate();
+  const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const inviteMemberSlot = urlParams.get("member_slot");
+  const inviteGymId = urlParams.get("gym_id");
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"login" | "signup">("signup");
   const authControllerRef = useRef<AbortController | null>(null);
@@ -85,7 +94,10 @@ function SignupPage() {
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
-        navigate({ to: "/dashboard", replace: true });
+        const role = await resolveUserRole(session.user);
+        if (role) {
+          navigate({ to: getDashboardPathForRole(role), replace: true });
+        }
       }
     };
     checkSession();
@@ -111,7 +123,7 @@ function SignupPage() {
   const loginForm = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
-      email: "",
+      identifier: "",
       password: "",
     },
   });
@@ -126,32 +138,180 @@ function SignupPage() {
 
     setIsLoading(true);
     try {
-      // 1. Sign up user with email/password
+      const ownerGymId = "d9b3f1a0-5b5b-4c4c-8c8c-d9b3f1a0d9b3";
+
+      if (inviteMemberSlot || inviteGymId) {
+        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+          email: data.email,
+          password: data.password,
+          options: { data: { role: "member" } },
+        });
+
+        if (signUpError) throw signUpError;
+
+        const newUserId = signUpData.user?.id;
+        if (!newUserId) throw new Error("Failed to create auth user");
+
+        if (inviteMemberSlot) {
+          const updates: any = { auth_user_id: newUserId, status: "Active" };
+          if (inviteGymId) updates.gym_id = inviteGymId;
+
+          const { error: updateError } = await supabase
+            .from("members")
+            .update(updates)
+            .eq("id", inviteMemberSlot);
+
+          if (updateError) {
+            const { error: insertError } = await supabase
+              .from("members")
+              .upsert([
+                {
+                  id: newUserId,
+                  auth_user_id: newUserId,
+                  full_name: data.gymName || data.email.split("@")[0],
+                  mobile_number: data.mobile,
+                  status: "Active",
+                  gym_id: inviteGymId || null,
+                  joining_date: new Date().toISOString().split("T")[0],
+                },
+              ], { onConflict: "id" });
+
+            if (insertError) {
+              if (String(insertError.message || "").toLowerCase().includes("duplicate") || String(insertError.code || "").includes("23505")) {
+                alert("Aapki profile pehle se bani hai, kripya direct Login karein");
+                return;
+              }
+              throw insertError;
+            }
+          }
+        } else if (inviteGymId) {
+          const { error: insertError } = await supabase
+            .from("members")
+            .upsert([
+              {
+                id: newUserId,
+                auth_user_id: newUserId,
+                full_name: data.gymName || data.email.split("@")[0],
+                mobile_number: data.mobile,
+                status: "Active",
+                gym_id: inviteGymId,
+                joining_date: new Date().toISOString().split("T")[0],
+              },
+            ], { onConflict: "id" });
+
+          if (insertError) {
+            if (String(insertError.message || "").toLowerCase().includes("duplicate") || String(insertError.code || "").includes("23505")) {
+              alert("Aapki profile pehle se bani hai, kripya direct Login karein");
+              return;
+            }
+            throw insertError;
+          }
+        }
+
+        toast.success("✅ Account created. Your membership is now active.");
+        signupForm.reset();
+        console.log("Member signup success: redirecting to /member-login");
+        window.location.href = "/member-login";
+        return;
+      }
+
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: data.email,
         password: data.password,
+        options: { data: { role: "owner", gym_id: ownerGymId } },
       });
 
-      if (authError) throw authError;
+      if (authError) {
+        const authMessage = String(authError.message || "").toLowerCase();
+        if (authError.status === 429 || authMessage.includes("rate limit") || authMessage.includes("over_email_send_rate_limit")) {
+          console.warn("Owner signup hit email rate limit; checking existing profile for direct redirect.", authError);
 
-      // 2. Insert gym profile
-      const { error: profileError } = await supabase.from("gym_profiles").insert([
-        {
-          id: authData.user?.id, // Link profile to auth user
-          gym_name: data.gymName,
-          city: data.city,
-          email: data.email,
-          mobile_number: data.mobile,
-        },
-      ]).abortSignal(authControllerRef.current.signal);
+          const { data: existingProfile, error: existingProfileError } = await supabase
+            .from("profiles")
+            .select("id, role, gym_id")
+            .eq("email", data.email)
+            .maybeSingle();
+
+          if (existingProfileError) {
+            console.error("FULL ERROR:", existingProfileError);
+            alert(JSON.stringify(existingProfileError, null, 2));
+          }
+
+          if (existingProfile?.role === "owner") {
+            console.log("Existing owner profile found during rate limit fallback:", existingProfile);
+            toast.success("✅ Account already exists. Redirecting to dashboard.");
+            window.location.href = "/dashboard";
+            return;
+          }
+
+          alert("Email rate limit aa gaya hai. Thodi der baad try karo ya login karo.");
+          return;
+        }
+
+        if (authMessage.includes("already") || authMessage.includes("exists") || authMessage.includes("registered")) {
+          alert("Aap pehle se registered hain, kripya Login karein.");
+          return;
+        }
+        throw authError;
+      }
+
+      if (!authData.user?.id) {
+        throw new Error("Failed to create auth user");
+      }
+
+      const ownerProfilePayload = {
+        id: authData.user.id,
+        role: "owner",
+        gym_id: ownerGymId,
+        gym_name: data.gymName,
+        city: data.city,
+        email: data.email,
+        mobile_number: data.mobile,
+      };
+
+      console.log("Sending data:", ownerProfilePayload);
+
+      const { error: ownerProfileError } = await supabase
+        .from("profiles")
+        .upsert([ownerProfilePayload], { onConflict: "id" })
+        .abortSignal(authControllerRef.current.signal);
+
+      if (ownerProfileError) {
+        console.error("FULL ERROR:", ownerProfileError);
+        alert(JSON.stringify(ownerProfileError, null, 2));
+        const profileMessage = String(ownerProfileError.message || "").toLowerCase();
+        if (profileMessage.includes("duplicate") || String(ownerProfileError.code || "").includes("23505")) {
+          alert("Aap pehle se registered hain, kripya Login karein.");
+          return;
+        }
+        throw ownerProfileError;
+      }
+
+      const { error: profileError } = await supabase
+        .from("gym_profiles")
+        .upsert(
+          [
+            {
+              id: authData.user.id,
+              role: "owner",
+              gym_id: ownerGymId,
+              gym_name: data.gymName,
+              city: data.city,
+              email: data.email,
+              phone: data.mobile,
+              mobile_number: data.mobile,
+            },
+          ],
+          { onConflict: "id" }
+        )
+        .abortSignal(authControllerRef.current.signal);
 
       if (profileError) {
-        // Silent Abort: Ignore AbortError or Lock broken
-        if (
-          profileError.name === 'AbortError' || 
-          profileError.message?.includes('abort') || 
-          profileError.message?.includes('Lock broken')
-        ) {
+        console.error("FULL ERROR:", profileError);
+        alert(JSON.stringify(profileError, null, 2));
+        const profileMessage = String(profileError.message || "").toLowerCase();
+        if (profileMessage.includes("duplicate") || String(profileError.code || "").includes("23505")) {
+          alert("Aap pehle se registered hain, kripya Login karein.");
           return;
         }
         throw profileError;
@@ -159,20 +319,21 @@ function SignupPage() {
 
       toast.success("✅ Account created and gym profile setup successfully!");
       signupForm.reset();
-      setTimeout(() => {
-        navigate({ to: "/dashboard", replace: true });
-      }, 500);
+      console.log("Create Gym success: redirecting to /dashboard");
+      window.location.href = "/dashboard";
     } catch (error: any) {
-      // Silent error for aborts
+      console.error("FULL ERROR:", error);
+      alert(JSON.stringify(error, null, 2));
       if (
-        error.name === 'AbortError' || 
-        error.message?.includes('abort') || 
-        error.message?.includes('Lock broken')
+        error.name === "AbortError" ||
+        error.message?.includes("abort") ||
+        error.message?.includes("Lock broken")
       ) {
-        console.warn('Silent fetch error in onSignupSubmit:', error);
+        console.warn("Silent fetch error in onSignupSubmit:", error);
         return;
       }
       console.warn("Signup error:", error);
+      alert(error?.message || "Signup failed.");
     } finally {
       setIsLoading(false);
     }
@@ -186,15 +347,24 @@ function SignupPage() {
 
     setIsLoading(true);
     try {
+      console.log('Login Step 1: starting signup-page login flow');
+      try {
+        await supabase.auth.signOut();
+        try { localStorage.clear(); } catch (e) { console.warn('localStorage.clear failed', e); }
+      } catch (signOutError) {
+        console.warn('Session clear failed before login:', signOutError);
+      }
+
       let loginEmail = data.identifier;
 
-      // Check if the input is a 10-digit mobile number
-      if (/^[0-9]{10}$/.test(data.identifier)) {
+      // Check if the input is an international mobile number
+      const normalizedMobile = normalizeToE164Phone(data.identifier, "");
+      if (normalizedMobile) {
         console.log("Supabase: Mobile number detected, looking up email...");
         const { data: profile, error: profileError } = await supabase
           .from("gym_profiles")
           .select("email")
-          .eq("mobile_number", data.identifier)
+          .or(`mobile_number.eq.${normalizedMobile},phone.eq.${normalizedMobile}`)
           .single()
           .abortSignal(authControllerRef.current.signal);
 
@@ -213,19 +383,35 @@ function SignupPage() {
         console.log("Supabase: Email found for mobile number:", loginEmail);
       }
 
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data: loginData, error } = await supabase.auth.signInWithPassword({
         email: loginEmail,
         password: data.password,
       });
 
-      if (error) throw error;
+      if (error) {
+        alert(error.message || 'Login failed.');
+        throw error;
+      }
 
+      const user = loginData?.user;
+      console.log('Auth Success:', user?.id);
+      const { data: profile, error: fetchError } = await supabase
+        .from('profiles')
+        .select('id, role')
+        .eq('id', user?.id)
+        .maybeSingle();
+
+      if (fetchError) {
+        console.warn('Role fetch failed:', fetchError);
+        alert(fetchError.message || 'Failed to fetch role. Redirecting anyway.');
+      }
+
+      const role = profile?.role === 'owner' ? 'owner' : 'member';
+      const target = role === 'owner' ? '/owner-dashboard' : '/dashboard';
+      console.log('Role Fetched:', role, 'Redirecting to:', target);
       toast.success("✅ Logged in successfully!");
       loginForm.reset();
-      
-      setTimeout(() => {
-        navigate({ to: "/dashboard", replace: true });
-      }, 500);
+      window.location.href = target;
     } catch (error: any) {
       // Silent error for aborts
       if (
@@ -237,6 +423,7 @@ function SignupPage() {
         return;
       }
       console.warn("Login error:", error);
+      alert(error?.message || "Login failed.");
     } finally {
       setIsLoading(false);
     }
@@ -246,11 +433,11 @@ function SignupPage() {
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Navbar />
       
-      <main className="flex-grow relative flex items-center justify-center px-6 py-24 md:py-32 overflow-hidden">
+      <main className="grow relative flex items-center justify-center px-6 py-24 md:py-32 overflow-hidden">
         {/* Background orbs for glassmorphism effect */}
         <div className="glow-orb -top-20 left-1/4 h-72 w-72 bg-primary-glow opacity-30" />
         <div className="glow-orb bottom-20 right-1/4 h-96 w-96 bg-primary opacity-20" />
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_color-mix(in_oklab,_var(--color-primary-glow)_10%,_transparent),_transparent_70%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,color-mix(in_oklab,var(--color-primary-glow)_10%,transparent),transparent_70%)]" />
 
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -329,7 +516,7 @@ function SignupPage() {
                                     <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                                   </Button>
                                 </PopoverTrigger>
-                                <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 bg-slate-900 border-white/10 backdrop-blur-xl">
+                                <PopoverContent className="w-(--radix-popover-trigger-width) p-0 bg-slate-900 border-white/10 backdrop-blur-xl">
                                   <Command className="bg-transparent">
                                     <CommandInput placeholder="Search city..." className="h-10 text-white" />
                                     <CommandList className="max-h-60 overflow-y-auto">
@@ -375,20 +562,23 @@ function SignupPage() {
                         {signupForm.formState.errors.email && <p className="text-xs text-red-500">{signupForm.formState.errors.email.message}</p>}
                       </div>
 
-                      <div className="space-y-2 group">
-                        <Label htmlFor="mobile" className="text-sm font-medium text-foreground/80 group-focus-within:text-primary transition-colors">Mobile Number</Label>
-                        <div className="relative">
-                          <Phone className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
-                          <Input
+                      <Controller
+                        control={signupForm.control}
+                        name="mobile"
+                        render={({ field }) => (
+                          <InternationalPhoneInput
                             id="mobile"
-                            type="tel"
-                            {...signupForm.register("mobile")}
-                            placeholder="e.g. 9876543210"
-                            className={`h-12 pl-11 bg-white/5 border-white/10 focus:border-primary/50 focus:ring-primary/20 transition-all rounded-xl ${signupForm.formState.errors.mobile ? 'border-red-500' : ''}`}
+                            label="Mobile Number"
+                            value={field.value}
+                            onChange={field.onChange}
+                            placeholder="e.g. +919876543210"
+                            defaultCountryCode="+91"
+                            error={signupForm.formState.errors.mobile?.message}
+                            className="group"
+                            inputClassName="bg-white/5 border-white/10 focus:border-primary/50 focus:ring-primary/20"
                           />
-                        </div>
-                        {signupForm.formState.errors.mobile && <p className="text-xs text-red-500">{signupForm.formState.errors.mobile.message}</p>}
-                      </div>
+                        )}
+                      />
 
                       <div className="space-y-2 group">
                         <Label htmlFor="password-signup" className="text-sm font-medium text-foreground/80 group-focus-within:text-primary transition-colors">Password</Label>

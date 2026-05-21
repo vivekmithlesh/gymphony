@@ -35,6 +35,8 @@ import { toast } from "sonner";
 import { BackButton } from "./BackButton";
 import { supabase } from "@/supabase";
 import { QRCodeSVG } from "qrcode.react";
+import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
+import { isValidInternationalPhone, normalizeToE164Phone, phoneForWaMe } from "@/lib/phone";
 
 // Optimized Member Row Component
 const MemberRow = memo(({ 
@@ -63,12 +65,12 @@ const MemberRow = memo(({
     <td className="px-6 py-4">
       <div className="flex items-center gap-3">
         <div className="h-9 w-9 rounded-full bg-gradient-brand flex items-center justify-center font-bold text-[10px] text-white">
-          {member.full_name.split(' ').map((n: string) => n[0]).join('')}
+          {(member.member_name || "M").split(' ').map((n: string) => n[0]).join('')}
         </div>
-        <span className="font-semibold text-slate-900">{member.full_name}</span>
+        <span className="font-semibold text-slate-900">{member.member_name}</span>
       </div>
     </td>
-    <td className="px-6 py-4 text-sm text-slate-600">{member.mobile_number}</td>
+    <td className="px-6 py-4 text-sm text-slate-600">{member.phone}</td>
     <td className="px-6 py-4 text-sm text-slate-600">{member.membership_plan}</td>
     <td className="px-6 py-4 text-sm text-slate-600">
       <div className="font-semibold text-slate-900">₹{Number(member.amount_paid || 0).toLocaleString()}</div>
@@ -101,8 +103,8 @@ const MemberRow = memo(({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-40 bg-white border-slate-200 text-slate-900 rounded-xl p-1 shadow-elegant">
           <DropdownMenuItem onClick={() => {
-            const message = `Hello ${member.full_name}, how can we help you today?`;
-            window.open(`https://wa.me/${member.mobile_number.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`, '_blank');
+            const message = `Hello ${member.member_name}, how can we help you today?`;
+            window.open(`https://wa.me/${phoneForWaMe(member.phone || member.mobile_number || "")}?text=${encodeURIComponent(message)}`, '_blank');
           }} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-green-50 cursor-pointer text-green-600">
             <MessageSquare className="h-3.5 w-3.5" />
             <span className="text-xs font-medium">Chat with Us</span>
@@ -237,23 +239,76 @@ export function MembersList() {
         return;
       }
 
-      console.log('Fetching Members with owner filter:', userId);
+      // 1. First get the owner's Gym ID
+      const { data: gymData, error: gymError } = await supabase
+        .from("gym_settings")
+        .select("id")
+        .eq("gym_owner_id", userId)
+        .maybeSingle();
 
-      const { data, error } = await supabase
+      if (gymError) {
+        console.error("Error fetching owner gym info:", gymError.message);
+      }
+
+      const gymId = gymData?.id;
+      console.log('Fetching Members with owner filters:', { userId, gymId });
+
+      // 2. Fetch members belonging to this gym or directly added by this owner
+      // We use the new Database VIEW 'members' which joins profiles data
+      let query = supabase
         .from("members")
-        .select("full_name, mobile_number, membership_plan, status, gym_owner_id, created_at, joining_date, expiry_date, avatar_url, amount_paid")
-        .eq('gym_owner_id', userId)
-        .order("full_name", { ascending: true });
+        .select("id, member_name, phone, membership_plan, status, gym_owner_id, gym_id, created_at, joining_date, expiry_date, avatar_url, amount_paid");
+      
+      if (gymId) {
+        query = query.or(`gym_owner_id.eq.${userId},gym_id.eq.${gymId}`);
+      } else {
+        query = query.eq('gym_owner_id', userId);
+      }
 
-      console.log("CRITICAL: MembersList Members Fetch Data:", data);
-      console.log("CRITICAL: MembersList Members Fetch Error:", error);
+      const { data, error } = await query.order("member_name", { ascending: true });
 
       if (error) {
         console.error("Database Error (Members):", error.message);
-        toast.error(`Database Error: ${error.message}`);
+        // Force reload if schema mismatch detected
+        if (error.message.includes("column") || error.message.includes("does not exist")) {
+          toast.error("Database schema changed. Refreshing...", {
+            duration: 2000,
+            onAutoClose: () => window.location.reload()
+          });
+        } else {
+          toast.error(`Database Error: ${error.message}`);
+        }
         return;
       }
-      setMembers(data || []);
+      const memberRows = data || [];
+      const memberIds = memberRows.map((member: any) => member.id).filter(Boolean);
+
+      if (memberIds.length > 0) {
+        const { data: profileAmounts, error: profileAmountsError } = await supabase
+          .from("profiles")
+          .select("id, amount_paid")
+          .in("id", memberIds);
+
+        if (!profileAmountsError) {
+          const amountPaidById = new Map(
+            (profileAmounts || []).map((row: any) => [row.id, Number(row.amount_paid) || 0])
+          );
+
+          setMembers(
+            memberRows.map((member: any) => ({
+              ...member,
+              amount_paid: amountPaidById.has(member.id)
+                ? amountPaidById.get(member.id)
+                : Number(member.amount_paid) || 0
+            }))
+          );
+        } else {
+          console.warn("Profile amount fetch error:", profileAmountsError.message);
+          setMembers(memberRows);
+        }
+      } else {
+        setMembers(memberRows);
+      }
     } catch (error: any) {
       console.error("Critical error in fetchMembers:", error.message);
     } finally {
@@ -262,8 +317,8 @@ export function MembersList() {
   };
 
   const filteredMembers = members.filter(member => {
-    const matchesSearch = member.full_name.toLowerCase().includes(debouncedSearch.toLowerCase()) || 
-                          member.mobile_number.includes(debouncedSearch);
+    const matchesSearch = (member.member_name || '').toLowerCase().includes(debouncedSearch.toLowerCase()) || 
+                          (member.phone || '').includes(debouncedSearch);
     const matchesFilter = filterStatus === "all" || 
                          (filterStatus === "active" && (member.status || '').toLowerCase() === "active") ||
                          (filterStatus === "overdue" && (member.status || '').toLowerCase() === "overdue");
@@ -277,7 +332,7 @@ export function MembersList() {
 
     try {
       const { error } = await supabase
-        .from("members")
+        .from("profiles")
         .delete()
         .eq("id", member.id);
 
@@ -297,9 +352,9 @@ export function MembersList() {
       const plan = availablePlans.find(p => p.name === member.membership_plan);
       const amount = plan ? plan.price : (member.membership_plan === 'Yearly' ? 12000 : (member.membership_plan === 'Quarterly' ? 4000 : 1500));
 
-      // Update member status to 'Active'
+      // Update member status to 'Active' in profiles (since members is a view)
       const { error: memberError } = await supabase
-        .from("members")
+        .from("profiles")
         .update({ status: "Active" })
         .eq("id", member.id);
 
@@ -328,7 +383,7 @@ export function MembersList() {
             {
               gym_owner_id: currentUser.id,
               activity_type: "payment",
-              description: `Received ₹${amount.toLocaleString()} from ${member.full_name} (Marked as Paid).`,
+              description: `Received ₹${amount.toLocaleString()} from ${member.member_name} (Marked as Paid).`,
               is_read: false,
             },
           ]);
@@ -339,8 +394,20 @@ export function MembersList() {
       setMembers(prev => prev.map(m => 
         m.id === member.id ? { ...m, status: "Active" } : m
       ));
+      setMembers(prev => prev.map(m => 
+        m.id === member.id ? { ...m, status: "Active" } : m
+      ));
+      setPaymentMember((prev) => prev && prev.id === member.id ? { ...prev, status: "Active", amount_paid: newTotal } : prev);
+
+      window.dispatchEvent(new CustomEvent("member-payment-updated", {
+        detail: {
+          memberId: member.id,
+          amount_paid: newTotal,
+          status: "Active"
+        }
+      }));
       
-      toast.success(`${member.full_name} marked as Paid and revenue recorded`);
+      toast.success(`${member.member_name} marked as Paid and revenue recorded`);
     } catch (error: any) {
       console.warn("Mark Paid error:", error);
       toast.error("Failed to mark as paid");
@@ -361,8 +428,8 @@ export function MembersList() {
 
     setEditingMember(member);
     setEditForm({
-      full_name: member.full_name,
-      mobile_number: member.mobile_number,
+      full_name: member.member_name || "",
+      mobile_number: member.phone || member.mobile_number || "",
       membership_plan: normalizePlan(member.membership_plan),
       status: member.status || "Active"
     });
@@ -376,18 +443,21 @@ export function MembersList() {
       console.warn("Name is required");
       return;
     }
-    if (!/^\d{10}$/.test(editForm.mobile_number)) {
-      console.warn("Phone number must be exactly 10 digits");
+    const normalizedPhone = normalizeToE164Phone(editForm.mobile_number, "+91");
+    if (!normalizedPhone || !isValidInternationalPhone(normalizedPhone)) {
+      console.warn("Phone number must be a valid international number");
       return;
     }
 
     try {
       setIsUpdating(true);
+      // Since 'members' is now a VIEW, we update the source 'profiles' table
       const { error } = await supabase
-        .from("members")
+        .from("profiles")
         .update({
           full_name: editForm.full_name,
-          mobile_number: editForm.mobile_number,
+          mobile_number: normalizedPhone,
+          phone: normalizedPhone,
           membership_plan: editForm.membership_plan,
           status: editForm.status
         })
@@ -431,32 +501,47 @@ export function MembersList() {
         return;
       }
 
-      // 1. Update member's amount_paid
+      // 1. Update member's amount_paid in the base table
       const currentPaid = Number(paymentMember.amount_paid || 0);
       const newTotal = currentPaid + amount;
 
       const { error: updateError } = await supabase
-        .from("members")
+        .from("profiles")
         .update({ amount_paid: newTotal })
         .eq("id", paymentMember.id)
         .eq("gym_owner_id", userId);
 
       if (updateError) throw updateError;
 
+      setMembers(prev => prev.map(member => 
+        member.id === paymentMember.id
+          ? { ...member, amount_paid: newTotal }
+          : member
+      ));
+      setPaymentMember(prev => prev ? { ...prev, amount_paid: newTotal } : prev);
+
       // 2. Record activity
       await supabase.from("activity_log").insert({
         gym_owner_id: userId,
         activity_type: "payment",
-        description: `Collected ₹${amount.toLocaleString()} from ${paymentMember.full_name}. Total paid: ₹${newTotal.toLocaleString()}.`,
+        description: `Collected ₹${amount.toLocaleString()} from ${paymentMember.member_name}. Total paid: ₹${newTotal.toLocaleString()}.`,
         is_read: false
       });
 
-      toast.success(`Payment of ₹${amount.toLocaleString()} collected for ${paymentMember.full_name}`);
+      toast.success(`Payment of ₹${amount.toLocaleString()} collected for ${paymentMember.member_name}`);
       setPaymentMember(null);
       setPaymentAmount("");
+
+      window.dispatchEvent(new CustomEvent("member-payment-updated", {
+        detail: {
+          memberId: paymentMember.id,
+          amount_paid: newTotal,
+          source: "collect-payment"
+        }
+      }));
       
       // 3. Re-fetch to update stats
-      fetchMembers();
+      await fetchMembers();
     } catch (error: any) {
       console.error("Payment error:", error.message);
       toast.error(`Failed to collect payment: ${error.message}`);
@@ -491,7 +576,7 @@ export function MembersList() {
         <div className="flex items-center gap-3 w-full md:w-auto">
           <Filter className="h-4 w-4 text-muted-foreground hidden md:block" />
           <Select value={filterStatus} onValueChange={setFilterStatus}>
-            <SelectTrigger className="w-full md:w-[180px] bg-white border-slate-200 rounded-xl text-slate-900">
+            <SelectTrigger className="w-full md:w-45 bg-white border-slate-200 rounded-xl text-slate-900">
               <SelectValue placeholder="Filter by status" />
             </SelectTrigger>
             <SelectContent className="bg-white border-slate-200 text-slate-900">
@@ -554,7 +639,7 @@ export function MembersList() {
       <AnimatePresence>
         {selectedMember && (
           <div 
-            className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
+            className="fixed inset-0 z-100 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
             onClick={() => setSelectedMember(null)}
           >
             <motion.div
@@ -588,7 +673,7 @@ export function MembersList() {
                 </div>
 
                 <div className="space-y-2">
-                  <h3 className="text-xl font-bold text-slate-900">{selectedMember.full_name}</h3>
+                  <h3 className="text-xl font-bold text-slate-900">{selectedMember.member_name}</h3>
                   <p className="text-sm text-slate-500 font-medium">Scan this QR at the gym entrance</p>
                 </div>
 
@@ -613,7 +698,7 @@ export function MembersList() {
       <AnimatePresence>
         {paymentMember && (
           <div 
-            className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
+            className="fixed inset-0 z-100 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
             onClick={() => setPaymentMember(null)}
           >
             <motion.div
@@ -621,7 +706,7 @@ export function MembersList() {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-white rounded-[2rem] shadow-2xl p-8 relative z-[101]"
+              className="w-full max-w-md bg-white rounded-[2rem] shadow-2xl p-8 relative z-101"
             >
               <div className="flex flex-col space-y-6">
                 <div className="flex items-center justify-between">
@@ -631,7 +716,7 @@ export function MembersList() {
                     </div>
                     <div>
                       <h3 className="text-xl font-bold text-slate-900">Collect Payment</h3>
-                      <p className="text-sm text-slate-500">Collect fees from {paymentMember.full_name}</p>
+                      <p className="text-sm text-slate-500">Collect fees from {paymentMember.member_name}</p>
                     </div>
                   </div>
                   <button onClick={() => setPaymentMember(null)} className="text-slate-400 hover:text-slate-600 transition-colors">
@@ -691,7 +776,7 @@ export function MembersList() {
       <AnimatePresence>
         {editingMember && (
           <div 
-            className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
+            className="fixed inset-0 z-100 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
             onClick={() => setEditingMember(null)}
           >
             <motion.div
@@ -699,7 +784,7 @@ export function MembersList() {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-white rounded-[2rem] shadow-2xl p-8 relative z-[101]"
+              className="w-full max-w-md bg-white rounded-[2rem] shadow-2xl p-8 relative z-101"
             >
               <div className="flex flex-col space-y-6">
                 <div className="flex items-center justify-between">
@@ -709,7 +794,7 @@ export function MembersList() {
                     </div>
                     <div>
                       <h3 className="text-xl font-bold text-slate-900">Edit Member</h3>
-                      <p className="text-sm text-slate-500">Update details for {editingMember.full_name}</p>
+                      <p className="text-sm text-slate-500">Update details for {editingMember.member_name}</p>
                     </div>
                   </div>
                   <button onClick={() => setEditingMember(null)} className="text-slate-400 hover:text-slate-600 transition-colors">
@@ -729,12 +814,16 @@ export function MembersList() {
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-sm font-semibold text-slate-700 ml-1">Phone Number</label>
-                    <Input 
+                    <InternationalPhoneInput
+                      id="member-phone"
+                      label="Phone Number"
                       value={editForm.mobile_number}
-                      onChange={(e) => setEditForm(prev => ({ ...prev, mobile_number: e.target.value.replace(/\D/g, '').slice(0, 10) }))}
-                      placeholder="10-digit mobile number"
-                      className="h-12 bg-slate-50 border-slate-200 rounded-xl focus:ring-primary/20 text-slate-900"
+                      onChange={(value) => setEditForm(prev => ({ ...prev, mobile_number: value }))}
+                      placeholder="e.g. +919876543210"
+                      defaultCountryCode="+91"
+                      error={editForm.mobile_number && !isValidInternationalPhone(editForm.mobile_number) ? "Please enter a valid international phone number" : undefined}
+                      className="group"
+                      inputClassName="bg-slate-50 border-slate-200 rounded-xl text-slate-900"
                     />
                   </div>
 
@@ -747,7 +836,7 @@ export function MembersList() {
                       <SelectTrigger className="h-12 bg-slate-50 border-slate-200 rounded-xl text-slate-900">
                         <SelectValue placeholder="Select a plan" />
                       </SelectTrigger>
-                      <SelectContent className="bg-white border-slate-200 text-slate-900 z-[110]" position="popper" sideOffset={5}>
+                      <SelectContent className="bg-white border-slate-200 text-slate-900 z-110" position="popper" sideOffset={5}>
                         <SelectItem value="Monthly">Monthly</SelectItem>
                         <SelectItem value="Quarterly">Quarterly</SelectItem>
                         <SelectItem value="Half-Yearly">Half-Yearly</SelectItem>

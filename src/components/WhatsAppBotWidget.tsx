@@ -1,120 +1,296 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { supabase } from '@/supabase';
-import { Loader2, Send, Sparkles } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Loader2, Send, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
+import { supabase } from '@/supabase';
 
-interface AIChat {
+interface ReceptionistMessage {
   id: string;
-  member_name: string;
-  message: string;
-  response: string;
+  member_name?: string | null;
+  full_name?: string | null;
+  sender_name?: string | null;
+  message?: string | null;
+  content?: string | null;
+  body?: string | null;
+  text?: string | null;
+  response?: string | null;
+  reply?: string | null;
+  answer?: string | null;
   created_at: string;
+  gym_id?: string | null;
+  gym_owner_id?: string | null;
+  [key: string]: any;
 }
 
-const SAMPLE_MESSAGES = [
-  { q: "What are the gym timings for tomorrow?", a: "Hi! We're open from 6:00 AM to 10:00 PM tomorrow. Looking forward to seeing you!" },
-  { q: "Can I bring a guest for a trial today?", a: "Yes, definitely! We offer a one-day free trial for guests. Please make sure they bring a valid ID." },
-  { q: "Is the yoga class still happening at 7 PM?", a: "Hi! Yes, the Hatha Yoga session is scheduled for 7:00 PM today in Studio A." },
-  { q: "Do you have any personal training slots available?", a: "We have a few slots open with Coach Rahul and Coach Priya. Would you like me to share their schedules?" },
-  { q: "Is there a parking space available near the gym?", a: "Yes, we have dedicated basement parking for members, and street parking is also available." }
-];
+interface GymSettings {
+  id: string;
+  gym_name?: string | null;
+  opening_time?: string | null;
+  closing_time?: string | null;
+  address?: string | null;
+  description?: string | null;
+}
 
-const SAMPLE_NAMES = ["Kabir", "Sanya", "Vikram", "Anjali", "Rohan"];
+interface GymPlan {
+  id: string;
+  name?: string | null;
+  plan_name?: string | null;
+  price?: number | null;
+  duration?: number | null;
+  duration_days?: number | null;
+}
 
 export default function WhatsAppBotWidget() {
-  const [chats, setChats] = useState<AIChat[]>([]);
+  const [messages, setMessages] = useState<ReceptionistMessage[]>([]);
+  const [gymSettings, setGymSettings] = useState<GymSettings | null>(null);
+  const [gymPlans, setGymPlans] = useState<GymPlan[]>([]);
+  const [gymId, setGymId] = useState<string | null>(null);
+  const [gymOwnerId, setGymOwnerId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSimulating, setIsSimulating] = useState(false);
-  const chatControllerRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    fetchLatestChats();
-    const channel = subscribeToChats();
-    return () => {
-      if (chatControllerRef.current) {
-        chatControllerRef.current.abort();
-      }
-      supabase.removeChannel(channel);
-    };
-  }, []);
+  const fetchControllerRef = useRef<AbortController | null>(null);
+  const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-  const fetchLatestChats = async () => {
-    // Abort previous request if it's still running
-    if (chatControllerRef.current) {
-      chatControllerRef.current.abort();
+  const getDisplayName = (row: ReceptionistMessage) => row.member_name || row.full_name || row.sender_name || 'Member';
+
+  const getMessageText = (row: ReceptionistMessage) => row.message || row.content || row.body || row.text || 'New message';
+
+  const getPlanSummary = () => {
+    if (gymPlans.length === 0) {
+      return 'our current membership plans';
     }
-    chatControllerRef.current = new AbortController();
 
+    return gymPlans
+      .map((plan) => {
+        const planName = plan.name || plan.plan_name || 'Plan';
+        const price = Number(plan.price) || 0;
+        return `${planName} at ₹${price.toLocaleString()}`;
+      })
+      .join(', ');
+  };
+
+  const buildContextAwareResponse = (messageText: string) => {
+    const lowerMessage = messageText.toLowerCase();
+    const gymName = gymSettings?.gym_name || 'the gym';
+    const openingTime = gymSettings?.opening_time || '6:00 AM';
+    const closingTime = gymSettings?.closing_time || '10:00 PM';
+
+    if (lowerMessage.includes('price') || lowerMessage.includes('fee') || lowerMessage.includes('cost') || lowerMessage.includes('membership') || lowerMessage.includes('plan')) {
+      return `Hi! ${gymName} currently offers ${getPlanSummary()}. Let me know which plan you want and I will share the details.`;
+    }
+
+    if (lowerMessage.includes('time') || lowerMessage.includes('timing') || lowerMessage.includes('open') || lowerMessage.includes('close') || lowerMessage.includes('hours')) {
+      return `Hi! ${gymName} is open from ${openingTime} to ${closingTime}. Feel free to visit anytime during those hours.`;
+    }
+
+    if (lowerMessage.includes('address') || lowerMessage.includes('location') || lowerMessage.includes('where')) {
+      return gymSettings?.address
+        ? `Sure, ${gymName} is located at ${gymSettings.address}.`
+        : `Sure, I can help with the location details for ${gymName}.`;
+    }
+
+    if (lowerMessage.includes('guest') || lowerMessage.includes('trial')) {
+      return 'Yes, guest visits and trial entries can be arranged. Please share the preferred visit time and I will help with the rest.';
+    }
+
+    if (gymSettings?.description) {
+      return `Thanks for reaching out. ${gymSettings.description}`;
+    }
+
+    return `Thanks for your message. The team at ${gymName} will get back to you shortly.`;
+  };
+
+  const normalizeMessage = (row: ReceptionistMessage): ReceptionistMessage => {
+    const messageText = getMessageText(row);
+    return {
+      ...row,
+      member_name: getDisplayName(row),
+      message: messageText,
+      response: row.response || row.reply || row.answer || buildContextAwareResponse(messageText),
+    };
+  };
+
+  const fetchLatestChats = async (resolvedGymId?: string | null, resolvedOwnerId?: string | null) => {
+    if (fetchControllerRef.current) {
+      fetchControllerRef.current.abort();
+    }
+
+    fetchControllerRef.current = new AbortController();
     setIsLoading(true);
+
     try {
-      const { data, error } = await supabase
-        .from('ai_chats')
+      let query = supabase
+        .from('messages')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(3)
-        .abortSignal(chatControllerRef.current.signal);
+        .limit(5)
+        .abortSignal(fetchControllerRef.current.signal);
+
+      if (resolvedGymId) {
+        query = query.eq('gym_id', resolvedGymId);
+      } else if (resolvedOwnerId) {
+        query = query.eq('gym_owner_id', resolvedOwnerId);
+      }
+
+      const { data, error } = await query;
 
       if (error) {
-        // Silent Abort
-        if (
-          error.name === 'AbortError' || 
-          error.message?.includes('abort') || 
-          error.message?.includes('Lock broken')
-        ) {
+        if (error.name === 'AbortError' || error.message?.includes('abort') || error.message?.includes('Lock broken')) {
           return;
         }
-        console.warn("AI Chats fetch error:", error.message);
+        console.warn('Messages fetch error:', error.message);
         return;
       }
-      setChats(data || []);
+
+      setMessages((data || []).map((row: ReceptionistMessage) => normalizeMessage(row)));
     } catch (error: any) {
-      // Silent error for aborts
-      if (
-        error.name === 'AbortError' || 
-        error.message?.includes('abort') || 
-        error.message?.includes('Lock broken')
-      ) {
-        console.warn('Silent fetch error in fetchLatestChats:', error);
-        return;
+      if (error.name !== 'AbortError' && !error.message?.includes('abort') && !error.message?.includes('Lock broken')) {
+        console.warn('Error fetching messages:', error);
       }
-      console.warn('Error fetching AI chats:', error);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const subscribeToChats = () => {
-    return supabase
-      .channel('ai_chats_realtime')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'ai_chats' },
-        (payload) => {
-          setChats(prev => [payload.new as AIChat, ...prev].slice(0, 3));
-        }
-      )
-      .subscribe();
+  const subscribeToMessages = (resolvedGymId?: string | null, resolvedOwnerId?: string | null) => {
+    const channel = supabase.channel('messages_realtime');
+    const filter = resolvedGymId
+      ? `gym_id=eq.${resolvedGymId}`
+      : resolvedOwnerId
+        ? `gym_owner_id=eq.${resolvedOwnerId}`
+        : undefined;
+
+    channel.on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        ...(filter ? { filter } : {})
+      },
+      (payload) => {
+        const normalized = normalizeMessage(payload.new as ReceptionistMessage);
+        setMessages((prev) => [normalized, ...prev].slice(0, 5));
+      }
+    );
+
+    return channel.subscribe();
   };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const initialize = async () => {
+      setIsLoading(true);
+
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const ownerId = sessionData.session?.user?.id || null;
+
+        if (!ownerId || !isMounted) {
+          setMessages([]);
+          setIsLoading(false);
+          return;
+        }
+
+        setGymOwnerId(ownerId);
+
+        const { data: settingsData, error: settingsError } = await supabase
+          .from('gym_settings')
+          .select('id, gym_name, opening_time, closing_time, address, description')
+          .eq('gym_owner_id', ownerId)
+          .maybeSingle();
+
+        if (settingsError) {
+          console.warn('Receptionist settings fetch error:', settingsError.message);
+        }
+
+        if (!isMounted) return;
+
+        const resolvedGymId = settingsData?.id || null;
+        setGymId(resolvedGymId);
+        setGymSettings(settingsData || null);
+
+        if (resolvedGymId) {
+          const [gymPlansResult, ownerPlansResult] = await Promise.all([
+            supabase
+              .from('gym_plans')
+              .select('id, name, plan_name, price, duration, duration_days')
+              .eq('gym_id', resolvedGymId),
+            supabase
+              .from('gym_plans')
+              .select('id, name, plan_name, price, duration, duration_days')
+              .eq('gym_owner_id', ownerId),
+          ]);
+
+          if (!isMounted) return;
+
+          const chosenPlans = (gymPlansResult.data && gymPlansResult.data.length > 0)
+            ? gymPlansResult.data
+            : (ownerPlansResult.data || []);
+
+          if (gymPlansResult.error) {
+            console.warn('Receptionist plans fetch error:', gymPlansResult.error.message);
+          }
+
+          setGymPlans(chosenPlans);
+        } else {
+          setGymPlans([]);
+        }
+
+        await fetchLatestChats(resolvedGymId, ownerId);
+        if (!isMounted) return;
+
+        realtimeChannelRef.current = subscribeToMessages(resolvedGymId, ownerId);
+      } catch (error) {
+        console.warn('Receptionist initialization failed:', error);
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    initialize();
+
+    return () => {
+      isMounted = false;
+      if (fetchControllerRef.current) {
+        fetchControllerRef.current.abort();
+      }
+      if (realtimeChannelRef.current) {
+        supabase.removeChannel(realtimeChannelRef.current);
+        realtimeChannelRef.current = null;
+      }
+    };
+  }, []);
 
   const simulateMessage = async () => {
     setIsSimulating(true);
+
     try {
-      const randomPair = SAMPLE_MESSAGES[Math.floor(Math.random() * SAMPLE_MESSAGES.length)];
-      const randomName = SAMPLE_NAMES[Math.floor(Math.random() * SAMPLE_NAMES.length)];
+      const simulatedPrompt = 'What are the gym timings for tomorrow?';
+      const simulatedResponse = buildContextAwareResponse(simulatedPrompt);
 
       const { error } = await supabase
-        .from('ai_chats')
-        .insert([{
-          member_name: randomName,
-          message: randomPair.q,
-          response: randomPair.a
-        }]);
+        .from('messages')
+        .insert([
+          {
+            member_name: 'Member',
+            message: simulatedPrompt,
+            response: simulatedResponse,
+            gym_id: gymId,
+            gym_owner_id: gymOwnerId,
+            created_at: new Date().toISOString(),
+          },
+        ]);
 
       if (error) throw error;
-      toast.success("New message simulated!");
+      toast.success('New message simulated!');
     } catch (error: any) {
-      console.warn("Simulation failed:", error.message);
+      console.warn('Simulation failed:', error.message);
+      toast.error('Unable to simulate message');
     } finally {
       setIsSimulating(false);
     }
@@ -145,45 +321,54 @@ export default function WhatsAppBotWidget() {
         </div>
       </div>
 
-      <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 font-sans text-sm flex-grow overflow-hidden flex flex-col">
+      <div className="mb-4 rounded-2xl border border-purple-100 bg-purple-50/40 px-4 py-3 text-xs text-purple-900">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-bold">Context:</span>
+          <span>{gymSettings?.gym_name || 'Gym'}</span>
+          {gymSettings?.opening_time && gymSettings?.closing_time && (
+            <span>• {gymSettings.opening_time} - {gymSettings.closing_time}</span>
+          )}
+          <span>• {gymPlans.length} membership plan{gymPlans.length === 1 ? '' : 's'} loaded</span>
+        </div>
+      </div>
+
+      <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 font-sans text-sm grow overflow-hidden flex flex-col">
         <p className="text-xs text-gray-400 mb-3 uppercase font-bold tracking-wider">Live Chat Feed</p>
-        
+
         {isLoading ? (
-          <div className="flex-grow flex flex-col items-center justify-center py-12">
+          <div className="grow flex flex-col items-center justify-center py-12">
             <Loader2 className="h-8 w-8 text-primary animate-spin mb-2" />
             <p className="text-xs text-muted-foreground">Connecting to WhatsApp feed...</p>
           </div>
-        ) : chats.length === 0 ? (
-          <div className="flex-grow flex flex-col items-center justify-center py-12 text-center">
+        ) : messages.length === 0 ? (
+          <div className="grow flex flex-col items-center justify-center py-12 text-center">
             <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-sm mb-3">
               <Sparkles className="h-6 w-6 text-purple-400" />
             </div>
             <p className="text-sm text-gray-500 font-medium">No messages yet</p>
-            <p className="text-[11px] text-gray-400 mt-1 max-w-[180px]">AI Receptionist is ready to handle your member inquiries.</p>
+            <p className="text-[11px] text-gray-400 mt-1 max-w-45">AI Receptionist is ready to handle member inquiries with live gym data.</p>
           </div>
         ) : (
           <div className="space-y-6 overflow-y-auto pr-1 custom-scrollbar">
             <AnimatePresence initial={false}>
-              {chats.map((chat) => (
+              {messages.map((chat) => (
                 <motion.div
                   key={chat.id}
                   initial={{ opacity: 0, y: 10, scale: 0.95 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   className="space-y-3"
                 >
-                  {/* Member Message */}
                   <div className="flex flex-col items-start">
-                    <p className="text-[11px] text-gray-500 font-bold mb-1 ml-1">Member ({chat.member_name}):</p>
+                    <p className="text-[11px] text-gray-500 font-bold mb-1 ml-1">Member ({chat.member_name || 'Member'}):</p>
                     <div className="bg-white p-3 rounded-tr-xl rounded-br-xl rounded-bl-xl border border-gray-200 shadow-sm max-w-[85%] text-gray-800">
-                      {chat.message}
+                      {chat.message || 'New message'}
                     </div>
                   </div>
 
-                  {/* AI Response */}
                   <div className="flex flex-col items-end">
                     <p className="text-[11px] text-purple-600 font-bold mb-1 mr-1">Gymphony AI:</p>
                     <div className="bg-purple-600 text-white p-3 rounded-tl-xl rounded-bl-xl rounded-br-xl shadow-sm max-w-[85%] text-left">
-                      {chat.response}
+                      {chat.response || buildContextAwareResponse(chat.message || '')}
                     </div>
                   </div>
                 </motion.div>

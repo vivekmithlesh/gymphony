@@ -2,6 +2,7 @@ import { Outlet, Link, createRootRoute, HeadContent, Scripts, useNavigate, useRo
 import { Toaster } from "sonner";
 import { useEffect, useState } from "react";
 import { supabase } from "@/supabase";
+import { getDashboardPathForRole, resolveUserRole } from "@/lib/auth-role";
 
 import appCss from "../styles.css?url";
 
@@ -58,7 +59,7 @@ function RootShell({ children }: { children: React.ReactNode }) {
       <head>
         <HeadContent />
       </head>
-      <body>
+      <body style={{ margin: 0, padding: 0, width: '100%', height: '100%', backgroundColor: '#F9FAFB' }}>
         {children}
         <Scripts />
       </body>
@@ -73,27 +74,34 @@ function RootComponent() {
   const [isAuthChecking, setIsAuthChecking] = useState(true);
 
   useEffect(() => {
-    const handleRedirects = (currentSession: any, currentPath: string) => {
+    const handleRedirects = async (currentSession: any, currentPath: string) => {
       const isOwnerAuthPage = currentPath === "/signup" || currentPath === "/login";
       const isMemberAuthPage = currentPath === "/member-login";
-      const isOwnerDashboard = currentPath.startsWith("/dashboard");
-      const isMemberDashboard = currentPath.startsWith("/member-dashboard");
+      const isOwnerProtected = currentPath.startsWith("/dashboard") || currentPath === "/city-leaderboard" || currentPath === "/kiosk" || currentPath === "/kiosk-mode";
+      const isMemberProtected = currentPath.startsWith("/member-dashboard");
       const isLandingPage = currentPath === "/";
-      const isKioskPage = currentPath === "/kiosk" || currentPath === "/kiosk-mode";
 
       if (currentSession) {
-        if (isOwnerAuthPage || (isLandingPage && !isMemberDashboard)) {
-          console.log("Auth: Redirecting logged-in owner to dashboard");
-          navigate({ to: "/dashboard", replace: true });
-        } else if (isMemberAuthPage) {
-          console.log("Auth: Redirecting logged-in member to member-dashboard");
-          navigate({ to: "/member-dashboard", replace: true });
+        const role = await resolveUserRole(currentSession.user);
+
+        if (role === "member") {
+          const target = getDashboardPathForRole(role);
+          if (isOwnerAuthPage || isMemberAuthPage || isOwnerProtected || isLandingPage) {
+            console.log("Auth: Redirecting member to member-dashboard");
+            navigate({ to: target, replace: true });
+          }
+        } else if (role === "owner") {
+          const target = getDashboardPathForRole(role);
+          if (isOwnerAuthPage || isMemberAuthPage || isMemberProtected || isLandingPage) {
+            console.log("Auth: Redirecting owner to dashboard");
+            navigate({ to: target, replace: true });
+          }
         }
       } else {
-        if (isOwnerDashboard || isKioskPage) {
+        if (isOwnerProtected) {
           console.log("Auth: Redirecting logged-out user to login");
           navigate({ to: "/login", replace: true });
-        } else if (isMemberDashboard) {
+        } else if (isMemberProtected) {
           console.log("Auth: Redirecting logged-out member to member-login");
           navigate({ to: "/member-login", replace: true });
         }
@@ -103,19 +111,23 @@ function RootComponent() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setIsAuthChecking(false);
-      handleRedirects(session, routerState.location.pathname);
+      void handleRedirects(session, routerState.location.pathname);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
       
       if (event === 'SIGNED_IN' && session) {
-        const isMember = session.user.app_metadata?.role === 'member' || session.user.user_metadata?.role === 'member';
-        const target = isMember ? "/member-dashboard" : "/dashboard";
-        console.log(`Auth: SIGNED_IN detected, navigating to ${target}`);
-        navigate({ to: target, replace: true });
+        void (async () => {
+          const role = await resolveUserRole(session.user);
+          if (role === "member" || role === "owner") {
+            const target = getDashboardPathForRole(role);
+            console.log(`Auth: SIGNED_IN detected, navigating to ${target}`);
+            navigate({ to: target, replace: true });
+          }
+        })();
       } else {
-        handleRedirects(session, routerState.location.pathname);
+        void handleRedirects(session, routerState.location.pathname);
       }
     });
 

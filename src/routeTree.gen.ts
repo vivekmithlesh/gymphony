@@ -13,6 +13,7 @@ import { Route as VerifyOtpRouteImport } from './routes/verify-otp'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
+import { Route as OwnerDashboardRouteImport } from './routes/owner-dashboard'
 import { Route as MemberLoginRouteImport } from './routes/member-login'
 import { Route as MemberDashboardRouteImport } from './routes/member-dashboard'
 import { Route as LoginRouteImport } from './routes/login'
@@ -20,7 +21,10 @@ import { Route as KioskModeRouteImport } from './routes/kiosk-mode'
 import { Route as KioskRouteImport } from './routes/kiosk'
 import { Route as GymProfileRouteImport } from './routes/gym-profile'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as CityLeaderboardRouteImport } from './routes/city-leaderboard'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as GymDetailGymIdRouteImport } from './routes/gym-detail.$gymId'
 
 const VerifyOtpRoute = VerifyOtpRouteImport.update({
   id: '/verify-otp',
@@ -40,6 +44,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const ResetPasswordRoute = ResetPasswordRouteImport.update({
   id: '/reset-password',
   path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OwnerDashboardRoute = OwnerDashboardRouteImport.update({
+  id: '/owner-dashboard',
+  path: '/owner-dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MemberLoginRoute = MemberLoginRouteImport.update({
@@ -77,14 +86,31 @@ const DashboardRoute = DashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CityLeaderboardRoute = CityLeaderboardRouteImport.update({
+  id: '/city-leaderboard',
+  path: '/city-leaderboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const GymDetailGymIdRoute = GymDetailGymIdRouteImport.update({
+  id: '/gym-detail/$gymId',
+  path: '/gym-detail/$gymId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
+  '/city-leaderboard': typeof CityLeaderboardRoute
   '/dashboard': typeof DashboardRoute
   '/gym-profile': typeof GymProfileRoute
   '/kiosk': typeof KioskRoute
@@ -92,13 +118,17 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/member-dashboard': typeof MemberDashboardRoute
   '/member-login': typeof MemberLoginRoute
+  '/owner-dashboard': typeof OwnerDashboardRoute
   '/reset-password': typeof ResetPasswordRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/verify-otp': typeof VerifyOtpRoute
+  '/gym-detail/$gymId': typeof GymDetailGymIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
+  '/city-leaderboard': typeof CityLeaderboardRoute
   '/dashboard': typeof DashboardRoute
   '/gym-profile': typeof GymProfileRoute
   '/kiosk': typeof KioskRoute
@@ -106,14 +136,18 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/member-dashboard': typeof MemberDashboardRoute
   '/member-login': typeof MemberLoginRoute
+  '/owner-dashboard': typeof OwnerDashboardRoute
   '/reset-password': typeof ResetPasswordRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/verify-otp': typeof VerifyOtpRoute
+  '/gym-detail/$gymId': typeof GymDetailGymIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
+  '/city-leaderboard': typeof CityLeaderboardRoute
   '/dashboard': typeof DashboardRoute
   '/gym-profile': typeof GymProfileRoute
   '/kiosk': typeof KioskRoute
@@ -121,15 +155,19 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/member-dashboard': typeof MemberDashboardRoute
   '/member-login': typeof MemberLoginRoute
+  '/owner-dashboard': typeof OwnerDashboardRoute
   '/reset-password': typeof ResetPasswordRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/verify-otp': typeof VerifyOtpRoute
+  '/gym-detail/$gymId': typeof GymDetailGymIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/admin'
+    | '/city-leaderboard'
     | '/dashboard'
     | '/gym-profile'
     | '/kiosk'
@@ -137,13 +175,17 @@ export interface FileRouteTypes {
     | '/login'
     | '/member-dashboard'
     | '/member-login'
+    | '/owner-dashboard'
     | '/reset-password'
     | '/settings'
     | '/signup'
     | '/verify-otp'
+    | '/gym-detail/$gymId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/admin'
+    | '/city-leaderboard'
     | '/dashboard'
     | '/gym-profile'
     | '/kiosk'
@@ -151,13 +193,17 @@ export interface FileRouteTypes {
     | '/login'
     | '/member-dashboard'
     | '/member-login'
+    | '/owner-dashboard'
     | '/reset-password'
     | '/settings'
     | '/signup'
     | '/verify-otp'
+    | '/gym-detail/$gymId'
   id:
     | '__root__'
     | '/'
+    | '/admin'
+    | '/city-leaderboard'
     | '/dashboard'
     | '/gym-profile'
     | '/kiosk'
@@ -165,14 +211,18 @@ export interface FileRouteTypes {
     | '/login'
     | '/member-dashboard'
     | '/member-login'
+    | '/owner-dashboard'
     | '/reset-password'
     | '/settings'
     | '/signup'
     | '/verify-otp'
+    | '/gym-detail/$gymId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdminRoute: typeof AdminRoute
+  CityLeaderboardRoute: typeof CityLeaderboardRoute
   DashboardRoute: typeof DashboardRoute
   GymProfileRoute: typeof GymProfileRoute
   KioskRoute: typeof KioskRoute
@@ -180,10 +230,12 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   MemberDashboardRoute: typeof MemberDashboardRoute
   MemberLoginRoute: typeof MemberLoginRoute
+  OwnerDashboardRoute: typeof OwnerDashboardRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   SettingsRoute: typeof SettingsRoute
   SignupRoute: typeof SignupRoute
   VerifyOtpRoute: typeof VerifyOtpRoute
+  GymDetailGymIdRoute: typeof GymDetailGymIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -214,6 +266,13 @@ declare module '@tanstack/react-router' {
       path: '/reset-password'
       fullPath: '/reset-password'
       preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/owner-dashboard': {
+      id: '/owner-dashboard'
+      path: '/owner-dashboard'
+      fullPath: '/owner-dashboard'
+      preLoaderRoute: typeof OwnerDashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/member-login': {
@@ -265,6 +324,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/city-leaderboard': {
+      id: '/city-leaderboard'
+      path: '/city-leaderboard'
+      fullPath: '/city-leaderboard'
+      preLoaderRoute: typeof CityLeaderboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -272,11 +345,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/gym-detail/$gymId': {
+      id: '/gym-detail/$gymId'
+      path: '/gym-detail/$gymId'
+      fullPath: '/gym-detail/$gymId'
+      preLoaderRoute: typeof GymDetailGymIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AdminRoute: AdminRoute,
+  CityLeaderboardRoute: CityLeaderboardRoute,
   DashboardRoute: DashboardRoute,
   GymProfileRoute: GymProfileRoute,
   KioskRoute: KioskRoute,
@@ -284,10 +366,12 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   MemberDashboardRoute: MemberDashboardRoute,
   MemberLoginRoute: MemberLoginRoute,
+  OwnerDashboardRoute: OwnerDashboardRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
   VerifyOtpRoute: VerifyOtpRoute,
+  GymDetailGymIdRoute: GymDetailGymIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

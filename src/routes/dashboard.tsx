@@ -34,7 +34,9 @@ import {
   Menu,
   Loader2,
   Crown,
-  Lock
+  Lock,
+  Trophy,
+  ShieldCheck
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -50,9 +52,11 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { QRCodeSVG } from "qrcode.react";
+import { Html5QrcodeScanner } from "html5-qrcode";
 import { supabase, supabaseUrl } from "@/supabase";
 import { initiatePhonePePayment, finalizeUpgrade as finalizePhonePeUpgrade } from "@/lib/phonepe";
 import { hasAccess, FeatureName, LIMITS } from "@/lib/permissions";
+import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
 import { MembersList } from "@/components/MembersList";
 import { KioskMode } from "@/components/KioskMode";
 import { FeatureLock } from "@/components/FeatureLock";
@@ -63,6 +67,8 @@ import { InventoryManager } from "@/components/InventoryManager";
 import { RevenueView } from "@/components/RevenueView";
 import { SettingsView } from "@/components/SettingsView";
 import { AttendanceView } from "@/components/AttendanceView";
+import { DashboardErrorBoundary } from "@/components/DashboardErrorBoundary";
+import { INTERNATIONAL_PHONE_REGEX, cleanPhoneInput, isValidInternationalPhone, normalizeToE164Phone, phoneForWaMe } from "@/lib/phone";
 import { 
   Sheet, 
   SheetContent, 
@@ -104,6 +110,7 @@ const navItems = [
   { name: "Members", icon: Users, feature: null },
   { name: "Attendance", icon: Calendar, feature: null },
   { name: "Revenue", icon: TrendingUp, feature: 'advanced_analytics' },
+  { name: "🏆 Leaderboard", icon: Trophy, feature: null, to: "/city-leaderboard" },
   { name: "Inventory", icon: Package, feature: 'advanced_analytics' }, // Grouped under analytics for now
   { name: "Plans", icon: CreditCard, feature: null },
   { name: "Kiosk Mode", icon: Monitor, feature: null },
@@ -118,13 +125,82 @@ const metricsTemplate = [
   { title: "Pending Dues", value: "₹0", change: "0%", icon: AlertCircle, trend: "down" }
 ];
 
+const isSchemaMismatchError = (error: any) => {
+  const errorCode = String(error?.code || "");
+  const errorMessage = String(error?.message || "").toLowerCase();
+
+  return (
+    errorCode === "PGRST204" ||
+    errorCode === "23503" ||
+    errorCode === "42P01" ||
+    errorMessage.includes("column") ||
+    errorMessage.includes("does not exist")
+  );
+};
+
+type GymSettings = {
+  id?: string;
+  gym_owner_id?: string | null;
+  plan_type?: string | null;
+  expiry_date?: string | null;
+  gym_name?: string | null;
+  owner_email?: string | null;
+  logo_url?: string | null;
+  [key: string]: any;
+};
+
+type GymPlan = {
+  id: string;
+  name?: string | null;
+  price?: number | null;
+  duration?: number | null;
+  gym_owner_id?: string | null;
+  gym_id?: string | null;
+  [key: string]: any;
+};
+
 function DashboardPage() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [addMemberTab, setAddMemberTab] = useState("Manual Entry");
+  const [memberIdToLink, setMemberIdToLink] = useState("");
+  const [memberDetailsToLink, setMemberDetailsToLink] = useState<any>(null);
+  const [isFetchingMemberToLink, setIsFetchingMemberToLink] = useState(false);
   const [isScanQROpen, setIsScanQROpen] = useState(false);
+
+  // Fetch member details when ID is entered
+  useEffect(() => {
+    const fetchMember = async () => {
+      if (!memberIdToLink || memberIdToLink.length < 4) {
+        setMemberDetailsToLink(null);
+        return;
+      }
+
+      setIsFetchingMemberToLink(true);
+      try {
+        // Search by short_id first, then by full id
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("id, full_name, avatar_url, short_id")
+          .or(`short_id.eq.${memberIdToLink},id.eq.${memberIdToLink}`)
+          .maybeSingle();
+
+        if (error) throw error;
+        setMemberDetailsToLink(data);
+      } catch (err) {
+        console.warn("Member fetch error:", err);
+        setMemberDetailsToLink(null);
+      } finally {
+        setIsFetchingMemberToLink(false);
+      }
+    };
+
+    const debounce = setTimeout(fetchMember, 500);
+    return () => clearTimeout(debounce);
+  }, [memberIdToLink]);
+
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isTrialExpired, setIsTrialExpired] = useState(false);
@@ -143,26 +219,118 @@ function DashboardPage() {
   const [checkedInMember, setCheckedInMember] = useState<any>(null);
   const [overdueMembersData, setOverdueMembersData] = useState<any[]>([]);
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
-  const [availablePlans, setAvailablePlans] = useState<any[]>([]);
+  const [availablePlans, setAvailablePlans] = useState<GymPlan[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [gymSettings, setGymSettings] = useState<any>(null);
+  const [gymSettings, setGymSettings] = useState<GymSettings | null>(null);
   const [showRenewalBanner, setShowRenewalBanner] = useState(false);
   const [daysUntilExpiry, setDaysUntilExpiry] = useState<number | null>(null);
   const [sendingReminderId, setSendingReminderId] = useState<string | null>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(true);
+  const [isGymSettingsLoading, setIsGymSettingsLoading] = useState(true);
+  const [isPlansLoading, setIsPlansLoading] = useState(true);
+  const [plansFetchError, setPlansFetchError] = useState<string | null>(null);
+  const [dashboardFatalError, setDashboardFatalError] = useState<string | null>(null);
+  const isFetchingStatsRef = useRef(false);
+  const dashboardFatalErrorRef = useRef(false);
+  const dashboardErrorCountRef = useRef(0);
+
+  const markDashboardFatalError = useCallback((context: string, error: any) => {
+    if (dashboardFatalErrorRef.current) {
+      return;
+    }
+
+    dashboardErrorCountRef.current += 1;
+    if (dashboardErrorCountRef.current > 3) {
+      console.error("[Dashboard] Error limit reached, stopping retries:", context, error);
+      dashboardFatalErrorRef.current = true;
+      isFetchingStatsRef.current = false;
+      setIsLoadingStats(false);
+      setIsGymSettingsLoading(false);
+      setIsPlansLoading(false);
+      setDashboardFatalError("Too many dashboard errors. Reload blocked to prevent flicker.");
+      return;
+    }
+
+    dashboardFatalErrorRef.current = true;
+    isFetchingStatsRef.current = false;
+    setIsLoadingStats(false);
+
+    const errorMessage = error instanceof Error
+      ? error.message
+      : String(error?.message || error || context);
+
+    console.error(`[Dashboard Fatal] ${context}:`, error);
+    setDashboardFatalError(errorMessage || context);
+  }, []);
 
   useEffect(() => {
     const init = async () => {
+      // Mark that dashboard load was attempted to prevent re-mounting flicker
+      if (typeof window !== "undefined") {
+        localStorage.setItem("dashboardLoadAttempted", "true");
+      }
+
+      setIsGymSettingsLoading(true);
+      
+      // 🔄 Force fresh session refresh to pick up latest gym_id from database
+      console.log("🔄 [Auth Cache] Refreshing Supabase session...");
       const { data: { session }, error } = await supabase.auth.getSession();
+      
+      if (error) {
+        console.error("❌ [Auth Cache] Session refresh failed:", error);
+        setIsGymSettingsLoading(false);
+        return;
+      }
+
       if (session?.user?.id) {
-        setCurrentUserId(session.user.id);
-        fetchGymSettings(session.user.id);
+        const userId = session.user.id;
+        console.log("✅ [Auth Cache] Session refreshed. User ID:", userId);
+        
+        setCurrentUserId(userId);
+        
+        // Fetch latest gym settings to verify gym_id in database
+        const { data: gymData, error: gymError } = await supabase
+          .from("gym_settings")
+          .select("id, gym_owner_id, gym_name")
+          .eq("gym_owner_id", userId)
+          .maybeSingle();
+
+        if (gymData) {
+          console.log("✅ [Database Sync] Frontend gym_id:", gymData.id);
+          console.log("✅ [Database Sync] Database gym_name:", gymData.gym_name);
+          console.log("✅ [Database Sync] Frontend ↔ Database SYNC VERIFIED ✓");
+        } else if (gymError) {
+          console.warn("⚠️ [Database Sync] Gym settings fetch error:", gymError);
+        } else {
+          console.warn("⚠️ [Database Sync] No gym settings found for user:", userId);
+        }
+        
+        fetchGymSettings(userId);
+      } else {
+        console.warn("⚠️ [Auth Cache] No active session found");
+        setIsGymSettingsLoading(false);
       }
     };
     init();
   }, []);
+
+  // ⏱️ Safety timeout to reset stuck loading states
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      if (isGymSettingsLoading) {
+        console.warn("⏱️ [Loading Timeout] Gym settings loading stuck after 15s, forcing reset");
+        setIsGymSettingsLoading(false);
+      }
+      if (isPlansLoading) {
+        console.warn("⏱️ [Loading Timeout] Plans loading stuck after 15s, forcing reset");
+        setIsPlansLoading(false);
+      }
+    }, 15000); // 15 second timeout
+
+    return () => clearTimeout(timeout);
+  }, [isGymSettingsLoading, isPlansLoading]);
 
   const { tab: searchTab, section: searchSection } = Route.useSearch();
 
@@ -182,20 +350,57 @@ function DashboardPage() {
     return () => window.removeEventListener('switchTab', handleSwitchTab);
   }, []);
 
+  useEffect(() => {
+    const handleGymSettingsUpdated = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      if (customEvent.detail) {
+        setGymSettings(customEvent.detail);
+      } else if (currentUserId) {
+        fetchGymSettings(currentUserId);
+      }
+    };
+
+    window.addEventListener("gym-settings-updated", handleGymSettingsUpdated as EventListener);
+    return () => window.removeEventListener("gym-settings-updated", handleGymSettingsUpdated as EventListener);
+  }, [currentUserId]);
+
   const fetchGymSettings = async (userId: string) => {
+    if (dashboardFatalErrorRef.current) {
+      setIsGymSettingsLoading(false);
+      return;
+    }
+
+    setIsGymSettingsLoading(true);
     try {
       const { data, error } = await supabase
         .from("gym_settings")
         .select("*")
         .eq("gym_owner_id", userId)
         .maybeSingle(); // Use maybeSingle to avoid 406/500 if no record exists
+
+      console.log("📊 [Gym Settings Fetch] User ID:", userId);
+      console.log("📊 [Gym Settings Fetch] Response Data:", data);
+      console.log("📊 [Gym Settings Fetch] Response Error:", error);
       
       if (error) {
-        console.error("Database Error (gym_settings):", error);
+        console.error("❌ [Gym Settings Fetch] Query failed:", error);
+        setGymSettings({} as GymSettings);
+        return;
+      }
+
+      if (!data?.gym_owner_id) {
+        console.error("❌ [Gym Settings Fetch] Missing gym_owner_id in response:", data);
+        setGymSettings({} as GymSettings);
         return;
       }
 
       if (data) {
+        console.log("✅ [Gym Settings Fetch] Successfully loaded:", {
+          gymId: data.id,
+          gymName: data.gym_name,
+          gymOwner: data.gym_owner_id,
+          planType: data.plan_type
+        });
         setGymSettings(data);
         
         // Renewal Warning Logic with Null Checks
@@ -225,10 +430,13 @@ function DashboardPage() {
         }
       } else {
         // Default to Free if no settings found
-        setGymSettings({ plan_type: 'Free' });
+        setGymSettings({} as GymSettings);
       }
     } catch (err) {
       console.error("Critical Exception in fetchGymSettings:", err);
+      setGymSettings({} as GymSettings);
+    } finally {
+      setIsGymSettingsLoading(false);
     }
   };
 
@@ -240,8 +448,14 @@ function DashboardPage() {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [lastAddedMember, setLastAddedMember] = useState<any>(null);
 
+  // ✅ Member QR Scanner state
+  const [showMemberQRScanner, setShowMemberQRScanner] = useState(false);
+  const [isScanningMember, setIsScanningMember] = useState(false);
+  const [isLinkingMember, setIsLinkingMember] = useState(false);
+  const memberQRScannerRef = useRef<Html5QrcodeScanner | null>(null);
+
   const fetchNotifications = useCallback(async () => {
-    if (!currentUserId) {
+    if (!currentUserId || dashboardFatalErrorRef.current) {
       console.error("Dashboard Error: currentUserId is undefined in fetchNotifications");
       return;
     }
@@ -254,7 +468,10 @@ function DashboardPage() {
         .limit(20);
 
       console.log("Dashboard Data (Notifications):", data);
-      if (error) throw error;
+      if (error) {
+        markDashboardFatalError("notifications query failed", error);
+        return;
+      }
       
       const formatted = (data || []).map(n => ({
         id: n.id,
@@ -270,7 +487,7 @@ function DashboardPage() {
     } catch (err) {
       console.warn("Error fetching notifications:", err);
     }
-  }, [currentUserId]);
+  }, [currentUserId, markDashboardFatalError]);
 
   const markNotificationsAsRead = async () => {
     if (!currentUserId) return;
@@ -292,23 +509,77 @@ function DashboardPage() {
   };
 
   const fetchAvailablePlans = useCallback(async () => {
-    if (!currentUserId) {
+    if (!currentUserId || dashboardFatalErrorRef.current) {
       console.error("Dashboard Error: currentUserId is undefined in fetchAvailablePlans");
       return;
     }
+
+    setIsPlansLoading(true);
+    setPlansFetchError(null);
+
     try {
-      // First try to fetch from gym_plans
+      console.log("📋 [Plans Fetch] Starting plans fetch for user:", currentUserId);
+      
+      // First try to fetch from gym_plans without depending on gym_owner_id
       const { data: plansData, error: plansError } = await supabase
         .from("gym_plans")
         .select("*")
-        .eq('gym_owner_id', currentUserId)
         .order("name", { ascending: true });
 
-      console.log("Dashboard Data (Plans):", plansData);
-      if (plansError) throw plansError;
+      console.log("📋 [Plans Fetch] Response from gym_plans:", plansData?.length || 0, "plans");
+      console.log("📋 [Plans Fetch] Response error:", plansError);
+      
+      if (plansError) {
+        if (isSchemaMismatchError(plansError)) {
+          console.error("❌ [Plans Fetch] Schema mismatch detected:", plansError);
+          setPlansFetchError("Plans schema mismatch detected. Showing empty state.");
+        } else {
+          console.error("❌ [Plans Fetch] Query failed:", plansError);
+          setPlansFetchError("Failed to load plans. Showing empty state.");
+        }
 
-      if (plansData && plansData.length > 0) {
-        setAvailablePlans(plansData);
+        setAvailablePlans([]);
+        const { data: membersData, error: membersError } = await supabase
+          .from("members")
+          .select("membership_plan")
+          .eq('gym_owner_id', currentUserId);
+
+        if (!membersError) {
+          const distinctPlans = Array.from(new Set((membersData || [])
+            .map(m => m.membership_plan)
+            .filter(Boolean)))
+            .map(planName => ({
+              id: String(planName),
+              name: String(planName),
+              price: 0,
+              duration: 1
+            }));
+
+          console.log("📋 [Plans Fetch] Fallback to members table:", distinctPlans.length, "distinct plans");
+          setAvailablePlans(distinctPlans);
+          if (distinctPlans.length > 0) {
+            setPlansFetchError(null);
+          }
+        }
+
+        return;
+      }
+
+      if (!plansData) {
+        console.log("📋 [Plans Fetch] Empty data returned, keeping stable empty state");
+        setAvailablePlans([]);
+        return;
+      }
+
+      const filteredPlans = plansData.filter((plan: GymPlan) => {
+        if (!plan?.gym_owner_id) return true;
+        return plan.gym_owner_id === currentUserId;
+      });
+
+      console.log("✅ [Plans Fetch] Filtered plans:", filteredPlans.length, "matching current user");
+
+      if (filteredPlans.length > 0) {
+        setAvailablePlans(filteredPlans);
       } else {
         // Fallback: Fetch distinct plans from members table if gym_plans is empty
         const { data: membersData, error: membersError } = await supabase
@@ -316,33 +587,35 @@ function DashboardPage() {
           .select("membership_plan")
           .eq('gym_owner_id', currentUserId);
 
-        if (membersError) throw membersError;
+        if (membersError) {
+          markDashboardFatalError("member plans fallback query failed", membersError);
+          return;
+        }
 
         const distinctPlans = Array.from(new Set((membersData || [])
           .map(m => m.membership_plan)
           .filter(Boolean)))
           .map(planName => ({
-            id: planName,
-            name: planName,
+            id: String(planName),
+            name: String(planName),
             price: 0, // Fallback price
             duration: 1 // Fallback duration
           }));
         
+        console.log("📋 [Plans Fetch] Using fallback plans from members:", distinctPlans.length, "distinct plans");
         setAvailablePlans(distinctPlans);
       }
     } catch (err) {
-      console.warn("Error fetching plans:", err);
-      // Final fallback
-      setAvailablePlans([
-        { id: 'Monthly', name: 'Monthly', price: 1500, duration: 1 },
-        { id: 'Quarterly', name: 'Quarterly', price: 4000, duration: 3 },
-        { id: 'Yearly', name: 'Yearly', price: 12000, duration: 12 }
-      ]);
+      console.warn("❌ [Plans Fetch] Exception:", err);
+      setPlansFetchError("Unable to load plans right now.");
+      setAvailablePlans([]);
+    } finally {
+      setIsPlansLoading(false);
     }
-  }, [currentUserId]);
+  }, [currentUserId, markDashboardFatalError]);
 
   const fetchLiveMemberCount = useCallback(async () => {
-    if (!currentUserId) return;
+    if (!currentUserId || dashboardFatalErrorRef.current) return;
     try {
       const twoHoursAgo = new Date(Date.now() - 120 * 60 * 1000).toISOString();
       const { count, error } = await supabase
@@ -350,34 +623,94 @@ function DashboardPage() {
         .select("*", { count: 'exact', head: true })
         .gte("created_at", twoHoursAgo);
 
-      if (error) throw error;
+      if (error) {
+        markDashboardFatalError("live member count query failed", error);
+        return;
+      }
       setLiveMemberCount(count || 0);
       statsCache.liveMemberCount = count || 0;
     } catch (err) {
       console.warn("Error fetching live member count:", err);
     }
-  }, [currentUserId]);
+  }, [currentUserId, markDashboardFatalError]);
 
   const fetchMembersCounts = useCallback(async () => {
-    if (!currentUserId) {
+    if (!currentUserId || dashboardFatalErrorRef.current || isFetchingStatsRef.current) {
       console.error("Dashboard Error: currentUserId is undefined in fetchMembersCounts");
       return;
     }
+    isFetchingStatsRef.current = true;
     setIsLoadingStats(true);
     try {
-      const { data, error } = await supabase
+      // 1. Get the owner's Gym ID first
+      const { data: gymData } = await supabase
+        .from("gym_settings")
+        .select("id")
+        .eq("gym_owner_id", currentUserId)
+        .maybeSingle();
+
+      const gymId = gymData?.id;
+      console.log("📍 [Members Count] Current User ID:", currentUserId);
+      console.log("📍 [Members Count] Gym ID from settings:", gymId);
+
+      // 2. Fetch members with both owner and gym filter
+      let query = supabase
         .from("members")
-        .select("id, status, membership_plan, full_name, mobile_number, expiry_date, amount_paid, created_at")
-        .eq('gym_owner_id', currentUserId);
+        .select("id, status, membership_plan, full_name, expiry_date, amount_paid, created_at, gym_id, mobile_number, phone");
+      
+      if (gymId) {
+        query = query.or(`gym_owner_id.eq.${currentUserId},gym_id.eq.${gymId}`);
+        console.log("📍 [Members Count] Using OR filter with gym_owner_id and gym_id");
+      } else {
+        query = query.eq('gym_owner_id', currentUserId);
+        console.log("📍 [Members Count] Using gym_owner_id filter only (no gym_id found)");
+      }
+
+      const { data, error } = await query;
+      console.log("📊 [Members Count] Members fetched:", data?.length || 0, "members");
+      console.log("📊 [Members Count] Error:", error);
 
       if (error) {
-        console.error("Supabase error fetching members:", error.message);
-        toast.error(`Database Error: ${error.message}`);
+        if (isSchemaMismatchError(error)) {
+          markDashboardFatalError("members query schema mismatch", error);
+          return;
+        }
+
+        markDashboardFatalError("members query failed", error);
         return;
       }
 
-      const totalCount = (data || []).length;
-      const activeCount = (data || []).filter(m => m.status?.toLowerCase() === 'active').length;
+      const memberRows = data || [];
+      const memberIds = memberRows.map((member: any) => member.id).filter(Boolean);
+
+      let amountPaidById = new Map<string, number>();
+      if (memberIds.length > 0) {
+        const { data: profileAmounts, error: profileAmountsError } = await supabase
+          .from("profiles")
+          .select("id, amount_paid")
+          .in("id", memberIds);
+
+        if (!profileAmountsError) {
+          amountPaidById = new Map(
+            (profileAmounts || []).map((row: any) => [row.id, Number(row.amount_paid) || 0])
+          );
+        } else {
+          console.warn("📊 [Members Count] Profile amount fetch error:", profileAmountsError);
+        }
+      }
+
+      const latestMembers = memberRows.map((member: any) => ({
+        ...member,
+        amount_paid: amountPaidById.has(member.id)
+          ? amountPaidById.get(member.id)
+          : Number(member.amount_paid) || 0
+      }));
+
+      const totalCount = latestMembers.length;
+      const activeCount = latestMembers.filter(m => m.status?.toLowerCase() === 'active').length;
+
+      console.log("📊 [Members Count] Total members:", totalCount);
+      console.log("📊 [Members Count] Active members:", activeCount);
 
       setTotalMembersCount(totalCount);
       statsCache.totalMembersCount = totalCount;
@@ -408,7 +741,7 @@ function DashboardPage() {
       // Check for expired members and update status in DB if needed
       const expiredMemberIds: string[] = [];
 
-      (data || []).forEach(m => {
+      latestMembers.forEach(m => {
         const paid = Number(m.amount_paid) || 0;
         totalRev += paid;
 
@@ -440,7 +773,6 @@ function DashboardPage() {
           .in("id", expiredMemberIds)
           .then(({ error }) => {
             if (error) console.error("Auto-expiry update failed:", error);
-            else fetchMembersCounts(); // Re-fetch to update UI
           });
       }
 
@@ -454,17 +786,19 @@ function DashboardPage() {
 
       // Update overdue members for 'Action Needed'
       const today = new Date().toISOString();
-      const overdue = (data || [])
+      const overdue = latestMembers
         .map(m => {
           const paid = Number(m.amount_paid) || 0;
           const planName = m.membership_plan || 'Monthly';
           const price = planPrices[planName] || 0;
           const due = Math.max(0, price - paid);
+          const memberPhone = m.mobile_number || m.phone || "";
           
           return {
             name: m.full_name,
             plan: m.membership_plan,
-            phone: m.mobile_number,
+            phone: memberPhone,
+            mobile_number: memberPhone,
             expiry_date: m.expiry_date,
             dueAmount: due,
             amount: `₹${due.toLocaleString()}`
@@ -479,15 +813,16 @@ function DashboardPage() {
     } catch (err: any) {
       console.warn("Error fetching member counts:", err.message);
     } finally {
+      isFetchingStatsRef.current = false;
       setIsLoadingStats(false);
     }
-  }, [currentUserId]);
+  }, [currentUserId, markDashboardFatalError]);
 
 
 
 
   const fetchRecentActivities = useCallback(async () => {
-    if (!currentUserId) {
+    if (!currentUserId || dashboardFatalErrorRef.current) {
       console.error("Dashboard Error: currentUserId is undefined in fetchRecentActivities");
       return;
     }
@@ -500,7 +835,10 @@ function DashboardPage() {
         .limit(10);
       
       console.log("Dashboard Data (Recent Activities):", data);
-      if (error) throw error;
+            if (error) {
+              markDashboardFatalError("recent activities query failed", error);
+              return;
+            }
       
       const formatted = (data || []).map(log => {
         const timestamp = new Date(log.created_at);
@@ -523,10 +861,10 @@ function DashboardPage() {
     } catch (err) {
       console.warn("Error fetching recent activities:", err);
     }
-  }, [currentUserId]);
+  }, [currentUserId, markDashboardFatalError]);
 
   const fetchLowStock = useCallback(async () => {
-    if (!currentUserId) {
+    if (!currentUserId || dashboardFatalErrorRef.current) {
       console.error("Dashboard Error: currentUserId is undefined in fetchLowStock");
       return;
     }
@@ -539,7 +877,10 @@ function DashboardPage() {
         .limit(5);
 
       console.log("Dashboard Data (Low Stock):", data);
-      if (error) throw error;
+      if (error) {
+        markDashboardFatalError("inventory query failed", error);
+        return;
+      }
       
       // Map to UI format
       const mappedItems = (data || []).map(item => ({
@@ -550,7 +891,7 @@ function DashboardPage() {
     } catch (err) {
       console.warn("Error fetching low stock:", err);
     }
-  }, [currentUserId]);
+  }, [currentUserId, markDashboardFatalError]);
 
   const handleCheckIn = async (memberId: string) => {
     try {
@@ -603,6 +944,12 @@ function DashboardPage() {
       return;
     }
 
+    const normalizedMemberPhone = normalizeToE164Phone(newMemberPhone, "+91");
+    if (!normalizedMemberPhone || !isValidInternationalPhone(normalizedMemberPhone)) {
+      toast.error("Please enter a valid international phone number");
+      return;
+    }
+
     // Check for Pro Plan Limits (100 members)
     if (!hasAccess(gymSettings?.plan_type, 'unlimited_members') && totalMembersCount >= LIMITS.FREE_MEMBER_LIMIT) {
       setIsAddMemberOpen(false);
@@ -615,6 +962,14 @@ function DashboardPage() {
       const selectedPlan = availablePlans.find(p => p.id === newMemberPlan);
       if (!selectedPlan) throw new Error("Plan not found");
 
+      // Get owner's gym ID from settings
+      const ownerGymId = gymSettings?.id;
+      if (!ownerGymId) {
+        toast.error("Gym profile not found. Please complete your gym setup first.");
+        setIsSavingMember(false);
+        return;
+      }
+
       const expiryDate = new Date();
       expiryDate.setMonth(expiryDate.getMonth() + (selectedPlan.duration || 1));
 
@@ -622,32 +977,27 @@ function DashboardPage() {
         .from("members")
         .insert([{
           full_name: newMemberName,
-          mobile_number: newMemberPhone,
+          mobile_number: normalizedMemberPhone,
+          phone: normalizedMemberPhone,
           membership_plan: selectedPlan.name,
           expiry_date: expiryDate.toISOString(),
-          status: "Active"
+          status: "Pending",
+          auth_user_id: null,
+          gym_id: ownerGymId,
+          gym_owner_id: currentUserId // associate invitation slot with this owner
         }])
         .select()
         .single();
 
       if (insertError) throw insertError;
 
-      // Log activity and record payment
+      // Log activity for invitation creation (does not mark member active)
       if (currentUserId) {
         await supabase.from("activity_log").insert([{
           gym_owner_id: currentUserId,
-          activity_type: "new_member",
-          description: `New member ${newMemberName} joined.`,
+          activity_type: "invitation_created",
+          description: `Invitation slot created for ${newMemberName}.`,
           is_read: false
-        }]);
-      }
-
-      if (selectedPlan.price > 0) {
-        await supabase.from("payments").insert([{
-          member_id: newMember.id,
-          amount: selectedPlan.price,
-          status: "Paid",
-          payment_date: new Date().toISOString()
         }]);
       }
 
@@ -662,7 +1012,8 @@ function DashboardPage() {
       setNewMemberPhone("");
       setNewMemberPlan("");
       
-      fetchMembersCounts();
+      // NOTE: Do not refresh members count for invitation slots — count should update
+      // only when the invited member completes signup and becomes Active.
     } catch (error: any) {
       console.warn("Error saving member:", error);
       toast.error("Failed to save member");
@@ -682,11 +1033,38 @@ function DashboardPage() {
     }
   };
 
-  const handleSendReminder = async (name: string, phone?: string, amount?: string) => {
-    if (!phone) return;
+  const cleanReminderPhone = (value?: string) => cleanPhoneInput(value);
 
-    const n8nWebhookUrl = "https://primary-production-4592.up.railway.app/webhook/gym-reminder"; // Replace with your actual n8n URL
-    const cleanPhone = phone.replace(/\D/g, '');
+  const normalizeReminderPhone = (value?: string) => {
+    const cleaned = cleanReminderPhone(value);
+
+    if (!cleaned) {
+      return "";
+    }
+
+    if (!INTERNATIONAL_PHONE_REGEX.test(cleaned)) {
+      return "";
+    }
+
+    return cleaned;
+  };
+
+  const handleSendReminder = async (name: string, phone?: string, amount?: string) => {
+    const cleanedPhone = cleanReminderPhone(phone);
+
+    if (!cleanedPhone) {
+      toast.error("Phone number missing for this member");
+      return;
+    }
+
+    const cleanPhone = normalizeReminderPhone(cleanedPhone);
+
+    if (!cleanPhone) {
+      toast.error("Please enter a valid international phone number");
+      return;
+    }
+
+    const whatsappPhone = phoneForWaMe(cleanPhone);
     const reminderId = `${name}-${cleanPhone}`;
     
     setSendingReminderId(reminderId);
@@ -694,6 +1072,7 @@ function DashboardPage() {
     try {
       console.log(`n8n: Triggering reminder for ${name}...`);
       
+      const n8nWebhookUrl = "https://primary-production-4592.up.railway.app/webhook/gym-reminder";
       const response = await fetch(n8nWebhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -706,26 +1085,193 @@ function DashboardPage() {
       });
 
       if (response.ok) {
-        toast.success(`Sent ✅ (via Automation)`);
+        toast.success(`Reminder sent to ${name} ✅`);
       } else {
-        throw new Error("Automation service unavailable");
+        throw new Error("Automation offline");
       }
     } catch (error) {
-      console.warn("n8n: Automation failed, falling back to WhatsApp Deep Link", error);
+      console.warn("Reminder: Falling back to manual WhatsApp", error);
       
       // Fallback to manual WhatsApp link
       const message = `Hello ${name}, your gym fee of ${amount || "pending amount"} is pending. Please clear it soon to avoid any interruption to your access!`;
-      window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
-      toast.info(`Automation offline. Opening WhatsApp...`);
+      const whatsappUrl = `https://wa.me/${whatsappPhone}?text=${encodeURIComponent(message)}`;
+      
+      // Open in new tab
+      window.open(whatsappUrl, '_blank');
+      toast.info(`Opening WhatsApp for manual reminder...`);
     } finally {
       setSendingReminderId(null);
     }
   };
 
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(window.location.origin + "/signup");
-    toast.success("Link copied to clipboard");
+    try {
+      const ownerGymId = gymSettings?.id ?? currentUserId ?? "";
+      const inviteLink = `${window.location.origin}/signup?gym_id=${encodeURIComponent(ownerGymId)}`;
+      navigator.clipboard.writeText(inviteLink);
+      toast.success("Invite link copied to clipboard");
+    } catch (err) {
+      console.warn("Copy failed:", err);
+      toast.error("Could not copy link");
+    }
   };
+
+  // ✅ NEW: Initialize member QR scanner
+  const initializeMemberQRScanner = useCallback(() => {
+    if (memberQRScannerRef.current || !showMemberQRScanner) return;
+
+    const scanner = new Html5QrcodeScanner(
+      "member-qr-reader",
+      { fps: 10, qrbox: { width: 250, height: 250 } },
+      false
+    );
+
+    const onScanSuccess = async (decodedText: string) => {
+      setIsScanningMember(true);
+
+      try {
+        // Extract member_id from QR code (UUID format)
+        let memberId = decodedText;
+
+        // If it's a URL, extract member_id parameter
+        if (decodedText.includes("?") || decodedText.includes("&")) {
+          const url = new URL(decodedText, window.location.origin);
+          memberId = url.searchParams.get("member_id") || decodedText;
+        }
+
+        if (!memberId || memberId.length === 0) {
+          toast.error("Invalid QR code. No member ID found.");
+          setIsScanningMember(false);
+          return;
+        }
+
+        // Stop scanner before linking
+        if (memberQRScannerRef.current) {
+          await memberQRScannerRef.current.clear();
+          memberQRScannerRef.current = null;
+        }
+
+        // Link member to gym
+        await handleLinkMemberToGym(memberId);
+      } catch (error) {
+        console.error("QR scan error:", error);
+        toast.error("Could not process QR code. Please try again.");
+        setIsScanningMember(false);
+      }
+    };
+
+    const onScanFailure = () => {
+      // Silently ignore scan failures
+    };
+
+    try {
+      scanner.render(onScanSuccess, onScanFailure);
+      memberQRScannerRef.current = scanner;
+    } catch (error) {
+      console.error("Failed to initialize QR scanner:", error);
+      toast.error("Could not access camera. Please check permissions.");
+      setShowMemberQRScanner(false);
+    }
+  }, [showMemberQRScanner]);
+
+  // ✅ NEW: Link member to gym by updating profiles table
+  const handleLinkMemberToGym = async (memberId: string) => {
+    if (!gymSettings?.id) {
+      toast.error("Gym profile not found. Please complete your gym setup first.");
+      return;
+    }
+
+    setIsLinkingMember(true);
+
+    try {
+      // 1. Search for the member in 'profiles' table using short_id (6B1F3D9B style)
+      const { data: profileData, error: profileError } = await supabase
+        .from("profiles")
+        .select("id, full_name, short_id")
+        .eq("short_id", memberId)
+        .maybeSingle();
+
+      if (profileError || !profileData) {
+        toast.error("Member with this ID not found. Please check the short_id.");
+        setIsLinkingMember(false);
+        return;
+      }
+
+      const actualMemberId = profileData.id;
+
+      // 2. Update profiles table with owner's gym_id
+      const { error: updateError } = await supabase
+        .from("profiles")
+        .update({ gym_id: gymSettings.id })
+        .eq("id", actualMemberId);
+
+      if (updateError) throw updateError;
+
+      // 3. Also update members table gym_id and gym_owner_id for consistency
+      const { error: memberUpdateError } = await supabase
+        .from("members")
+        .update({ 
+          gym_id: gymSettings.id,
+          gym_owner_id: currentUserId 
+        })
+        .eq("id", actualMemberId);
+
+      if (memberUpdateError) {
+        console.warn("Could not update members table:", memberUpdateError);
+      }
+
+      // 4. Log activity
+      if (currentUserId) {
+        await supabase.from("activity_log").insert([{
+          gym_owner_id: currentUserId,
+          member_id: actualMemberId,
+          activity_type: "member_joined",
+          description: `${profileData.full_name} joined your gym via short_id link.`,
+          is_read: false
+        }]);
+      }
+
+      toast.success(`✅ ${profileData.full_name} Linked Successfully!`);
+      setShowMemberQRScanner(false);
+      setMemberIdToLink("");
+      setMemberDetailsToLink(null);
+      setAddMemberTab("Manual Entry");
+      
+      // Refresh stats
+      fetchMembersCounts();
+      fetchRecentActivities();
+    } catch (error) {
+      console.error("Unexpected error linking member:", error);
+      toast.error("Linking failed. Please try again.");
+    } finally {
+      setIsLinkingMember(false);
+      setIsScanningMember(false);
+    }
+  };
+
+  // ✅ NEW: Close member QR scanner
+  const handleCloseMemberQRScanner = useCallback(() => {
+    if (memberQRScannerRef.current) {
+      memberQRScannerRef.current.clear().catch(() => {});
+      memberQRScannerRef.current = null;
+    }
+    setShowMemberQRScanner(false);
+    setIsScanningMember(false);
+  }, []);
+
+  // ✅ Initialize scanner when tab changes
+  useEffect(() => {
+    initializeMemberQRScanner();
+  }, [showMemberQRScanner, initializeMemberQRScanner]);
+
+  // ✅ Cleanup scanner on unmount
+  useEffect(() => {
+    return () => {
+      if (memberQRScannerRef.current) {
+        memberQRScannerRef.current.clear().catch(() => {});
+      }
+    };
+  }, []);
 
   const handleUpgradePayment = async () => {
     if (!currentUserId) return;
@@ -743,6 +1289,10 @@ function DashboardPage() {
   };
 
   useEffect(() => {
+    if (dashboardFatalErrorRef.current) {
+      return;
+    }
+
     if (currentUserId) {
       fetchMembersCounts();
       fetchRecentActivities();
@@ -754,19 +1304,26 @@ function DashboardPage() {
       // Auto-refresh live count every 60 seconds
       const liveRefreshInterval = setInterval(fetchLiveMemberCount, 60000);
 
+      const channelId = Math.random().toString(36).substring(7);
+      const handleMemberPaymentUpdated = () => fetchMembersCounts();
+
+      window.addEventListener("member-payment-updated", handleMemberPaymentUpdated as EventListener);
+
       const channel = supabase
-        .channel("dashboard_realtime")
+        .channel(`dashboard_realtime_${channelId}`)
         .on("postgres_changes", { event: "*", schema: "public", table: "activity_log", filter: `gym_owner_id=eq.${currentUserId}` }, fetchNotifications)
         .on("postgres_changes", { event: "*", schema: "public", table: "members", filter: `gym_owner_id=eq.${currentUserId}` }, fetchMembersCounts)
+        .on("postgres_changes", { event: "*", schema: "public", table: "profiles", filter: `gym_owner_id=eq.${currentUserId}` }, fetchMembersCounts)
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "check_ins" }, fetchLiveMemberCount)
         .subscribe();
 
       return () => {
         clearInterval(liveRefreshInterval);
+        window.removeEventListener("member-payment-updated", handleMemberPaymentUpdated as EventListener);
         supabase.removeChannel(channel);
       };
     }
-  }, [currentUserId, fetchMembersCounts, fetchRecentActivities, fetchLowStock, fetchAvailablePlans, fetchNotifications, fetchLiveMemberCount]);
+  }, [currentUserId]);
 
   const dynamicMetrics = metricsTemplate.map(m => {
     if (m.title === "Total Members") return { ...m, value: `${totalMembersCount}` };
@@ -784,6 +1341,41 @@ function DashboardPage() {
     }
     return m;
   });
+
+  if (dashboardFatalError) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-6 text-white">
+        <div className="w-full max-w-xl rounded-3xl border border-white/10 bg-white/5 p-8 text-center shadow-2xl backdrop-blur-xl">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 text-red-400">
+            <span className="text-2xl font-bold">!</span>
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight">Dashboard Error</h1>
+          <p className="mt-3 text-sm text-slate-300">
+            A database error was detected, so the dashboard was frozen to prevent flicker and reload loops.
+          </p>
+          <div className="mt-6 rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-left text-sm text-red-100">
+            {dashboardFatalError}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isGymSettingsLoading) {
+    return (
+      <DashboardErrorBoundary>
+        <div className="flex min-h-screen items-center justify-center bg-slate-950 px-6 text-white">
+          <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-white/5 p-8 text-center shadow-2xl backdrop-blur-xl">
+            <Loader2 className="mx-auto h-10 w-10 animate-spin text-primary" />
+            <h1 className="mt-4 text-2xl font-bold tracking-tight">Loading Dashboard</h1>
+            <p className="mt-2 text-sm text-slate-300">
+              Fetching gym settings and stabilizing the dashboard.
+            </p>
+          </div>
+        </div>
+      </DashboardErrorBoundary>
+    );
+  }
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -901,13 +1493,18 @@ function DashboardPage() {
                             planType={gymSettings?.plan_type || 'Free'} 
                             featureName="Automated WhatsApp Reminders"
                           >
+                            {(() => {
+                              const reminderPhone = member.phone || member.mobile_number || "";
+                              const reminderKeyPhone = normalizeReminderPhone(reminderPhone);
+                              const reminderKey = reminderKeyPhone ? `${member.name}-${reminderKeyPhone}` : `${member.name}-missing`;
+
+                              return (
                             <Button 
-                              onClick={() => handleSendReminder(member.name, member.phone, member.amount)}
-                              variant="outline"
-                              disabled={(gymSettings && !gymSettings.whatsapp_reminders) || sendingReminderId === `${member.name}-${member.phone?.replace(/\D/g, '')}`}
-                              className={`rounded-xl border-white/10 hover:bg-primary hover:text-white ${(gymSettings && !gymSettings.whatsapp_reminders) || sendingReminderId === `${member.name}-${member.phone?.replace(/\D/g, '')}` ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              onClick={() => handleSendReminder(member.name, reminderPhone, member.amount)}
+                              className={`rounded-xl bg-primary text-white font-bold px-6 h-11 shadow-lg shadow-primary/20 hover:shadow-primary/40 transition-all ${sendingReminderId === reminderKey ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              disabled={sendingReminderId === reminderKey}
                             >
-                              {sendingReminderId === `${member.name}-${member.phone?.replace(/\D/g, '')}` ? (
+                              {sendingReminderId === reminderKey ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
                               ) : (
                                 <>
@@ -916,6 +1513,8 @@ function DashboardPage() {
                                 </>
                               )}
                             </Button>
+                              );
+                            })()}
                           </FeatureLock>
                         </div>
                       ))
@@ -1018,14 +1617,15 @@ function DashboardPage() {
   };
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col overflow-hidden">
+    <DashboardErrorBoundary>
+    <div className="w-full min-h-screen bg-background text-foreground flex flex-col overflow-hidden">
       <AnimatePresence>
         {showRenewalBanner && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="bg-amber-500 text-white overflow-hidden relative z-[150]"
+            className="bg-amber-500 text-white overflow-hidden relative z-150"
           >
             <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
@@ -1069,7 +1669,7 @@ function DashboardPage() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-slate-900/95 backdrop-blur-xl"
+            className="fixed inset-0 z-200 flex items-center justify-center p-6 bg-slate-900/95 backdrop-blur-xl"
           >
             <div className="w-full max-w-lg bg-white rounded-[3rem] p-12 text-center space-y-8 shadow-2xl border border-white/20">
               <div className="h-24 w-24 bg-red-50 rounded-full flex items-center justify-center mx-auto">
@@ -1109,7 +1709,7 @@ function DashboardPage() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-slate-900/90 backdrop-blur-md"
+            className="fixed inset-0 z-200 flex items-center justify-center p-6 bg-slate-900/90 backdrop-blur-md"
           >
             <div className="w-full max-w-md bg-white rounded-[2.5rem] p-10 text-center space-y-8 shadow-2xl relative">
               <button 
@@ -1181,7 +1781,7 @@ function DashboardPage() {
           </div>
         </Link>
         
-        <nav className="flex-grow px-4 space-y-2">
+        <nav className="grow px-4 space-y-2">
           {navItems.map((item) => {
             const hasFeatureAccess = hasAccess(gymSettings?.plan_type, item.feature as FeatureName);
             
@@ -1189,6 +1789,11 @@ function DashboardPage() {
               <button
                 key={item.name}
                 onClick={() => {
+                  if (item.to) {
+                    navigate({ to: item.to as "/city-leaderboard" });
+                    return;
+                  }
+
                   setActiveTab(item.name);
                 }}
                 className={`flex items-center justify-between px-4 py-3 w-full rounded-xl transition-all ${
@@ -1220,7 +1825,7 @@ function DashboardPage() {
         </div>
       </aside>
 
-      <main className="flex-grow relative overflow-y-auto px-6 py-8 md:px-10 lg:py-12">
+      <main className="grow relative overflow-y-auto px-6 py-8 md:px-10 lg:py-12">
         {/* Mobile Header */}
         <div className="lg:hidden flex items-center justify-between mb-8">
           <Link to="/" className="flex items-center gap-2">
@@ -1251,6 +1856,12 @@ function DashboardPage() {
                     <button
                       key={item.name}
                       onClick={() => {
+                        if (item.to) {
+                          navigate({ to: item.to as "/city-leaderboard" });
+                          setIsMobileMenuOpen(false);
+                          return;
+                        }
+
                         setActiveTab(item.name);
                         setIsMobileMenuOpen(false);
                       }}
@@ -1333,10 +1944,10 @@ function DashboardPage() {
                           Mark all as read
                         </button>
                       </div>
-                      <div className="max-h-[400px] overflow-y-auto custom-scrollbar">
+                      <div className="max-h-100 overflow-y-auto custom-scrollbar">
                         {notifications.length > 0 ? (
                           notifications.map((n) => (
-                            <div key={n.id} className={`p-5 border-b border-slate-50 hover:bg-primary/5 transition-colors ${!n.isRead ? 'bg-primary/[0.02]' : ''}`}>
+                            <div key={n.id} className={`p-5 border-b border-slate-50 hover:bg-primary/5 transition-colors ${!n.isRead ? 'bg-primary/2' : ''}`}>
                               <div className="flex justify-between items-start mb-1.5">
                                 <span className="text-[10px] font-black text-primary uppercase tracking-widest">{n.title}</span>
                                 <span className="text-[10px] font-medium text-slate-400">{n.time}</span>
@@ -1362,11 +1973,19 @@ function DashboardPage() {
             <div className="relative">
               <button 
                 onClick={() => setIsProfileOpen(!isProfileOpen)}
-                className="h-10 w-10 rounded-full bg-gradient-brand p-0.5 transition-transform hover:scale-105"
+                className="h-10 w-10 rounded-full bg-gradient-brand p-0.5 transition-transform hover:scale-105 overflow-hidden flex items-center justify-center"
               >
-                <div className="h-full w-full rounded-full bg-slate-950 flex items-center justify-center overflow-hidden">
-                  <Users className="h-5 w-5 text-white" />
-                </div>
+                {gymSettings?.logo_url ? (
+                  <img
+                    src={gymSettings.logo_url}
+                    alt={`${gymSettings.gym_name || 'Gym'} logo`}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <div className="h-full w-full rounded-full bg-slate-950 flex items-center justify-center overflow-hidden">
+                    <Users className="h-5 w-5 text-white" />
+                  </div>
+                )}
               </button>
 
               <AnimatePresence>
@@ -1381,8 +2000,8 @@ function DashboardPage() {
                     >
                       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-brand" />
                       <div className="p-5 border-b border-slate-100 bg-slate-50/50">
-                        <p className="font-bold text-slate-900 leading-none mb-1">Gym Owner</p>
-                        <p className="text-xs text-slate-500 font-medium">owner@gymphony.com</p>
+                        <p className="font-bold text-slate-900 leading-none mb-1">{gymSettings?.gym_name || 'Gym Owner'}</p>
+                        <p className="text-xs text-slate-500 font-medium">{gymSettings?.owner_email || 'owner@gymphony.com'}</p>
                       </div>
                       <div className="p-2">
                         <button 
@@ -1423,7 +2042,7 @@ function DashboardPage() {
                 initial={{ opacity: 0, y: -50 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -50 }}
-                className="fixed top-10 left-1/2 -translate-x-1/2 z-[100] w-full max-w-md px-6 pointer-events-none"
+                className="fixed top-10 left-1/2 -translate-x-1/2 z-100 w-full max-w-md px-6 pointer-events-none"
               >
                 <div className="bg-slate-900/90 backdrop-blur-xl border border-white/20 rounded-3xl p-6 shadow-2xl text-center">
                   <div className="h-16 w-16 bg-primary/20 rounded-full flex items-center justify-center mx-auto mb-4 border border-primary/30">
@@ -1456,12 +2075,17 @@ function DashboardPage() {
                 <button onClick={() => setIsAddMemberOpen(false)}><X className="h-6 w-6 text-slate-400" /></button>
               </div>
 
-              <div className="flex p-1 bg-slate-100 rounded-2xl">
-                {["Manual Entry", "Share QR"].map((tab) => (
+              <div className="flex p-1 bg-slate-100 rounded-2xl overflow-x-auto">
+                {["Manual Entry", "Share QR", "Scan Member", "Add by ID"].map((tab) => (
                   <button
                     key={tab}
-                    onClick={() => setAddMemberTab(tab)}
-                    className={`flex-1 py-2 text-sm font-bold rounded-xl transition-all ${
+                    onClick={() => {
+                      setAddMemberTab(tab);
+                      if (tab === "Scan Member") {
+                        setShowMemberQRScanner(true);
+                      }
+                    }}
+                    className={`flex-1 py-2 px-3 text-[10px] md:text-sm font-bold rounded-xl transition-all whitespace-nowrap ${
                       addMemberTab === tab ? "bg-white text-primary shadow-sm" : "text-slate-500"
                     }`}
                   >
@@ -1472,13 +2096,23 @@ function DashboardPage() {
 
               {addMemberTab === "Manual Entry" ? (
                 <div className="space-y-4">
+                  {/* ... existing manual entry fields ... */}
                   <div className="space-y-2">
                     <Label className="text-slate-600">Full Name</Label>
                     <Input value={newMemberName} onChange={(e) => setNewMemberName(e.target.value)} className="bg-slate-50 text-slate-900" />
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-slate-600">Phone Number</Label>
-                    <Input value={newMemberPhone} onChange={(e) => setNewMemberPhone(e.target.value)} className="bg-slate-50 text-slate-900" />
+                    <InternationalPhoneInput
+                      id="new-member-phone"
+                      label="Phone Number"
+                      value={newMemberPhone}
+                      onChange={setNewMemberPhone}
+                      placeholder="e.g. +919876543210"
+                      defaultCountryCode="+91"
+                      error={newMemberPhone && !isValidInternationalPhone(newMemberPhone) ? "Please enter a valid international phone number" : undefined}
+                      className="group"
+                      inputClassName="bg-slate-50 text-slate-900 border-slate-200"
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label className="text-slate-600">Plan</Label>
@@ -1487,9 +2121,15 @@ function DashboardPage() {
                         <SelectValue placeholder="Select plan" />
                       </SelectTrigger>
                       <SelectContent>
-                        {availablePlans.map(p => (
-                          <SelectItem key={p.id} value={p.id}>{p.name} (₹{p.price})</SelectItem>
-                        ))}
+                        {isPlansLoading ? (
+                          <SelectItem value="__loading" disabled>Loading plans...</SelectItem>
+                        ) : availablePlans.length > 0 ? (
+                          availablePlans.map(p => (
+                            <SelectItem key={p.id} value={p.id}>{p.name || p.id} (₹{p.price ?? 0})</SelectItem>
+                          ))
+                        ) : (
+                          <SelectItem value="__empty" disabled>{plansFetchError || "No Plans Found"}</SelectItem>
+                        )}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1497,13 +2137,103 @@ function DashboardPage() {
                     {isSavingMember ? "Saving..." : "Save Member"}
                   </Button>
                 </div>
-              ) : (
-                <div className="text-center space-y-6">
+              ) : addMemberTab === "Share QR" ? (
+                <div className="text-center space-y-4">
+                  {/* ... existing Share QR ... */}
                   <div className="mx-auto w-48 h-48 bg-slate-50 rounded-3xl border-2 border-slate-100 flex items-center justify-center p-4">
-                    <QrCode className="w-full h-full text-slate-900" />
-                  </div>
+                      {(() => {
+                        const ownerGymId = gymSettings?.id ?? currentUserId ?? "";
+                        const inviteLink = `${window.location.origin}/signup?gym_id=${encodeURIComponent(ownerGymId)}`;
+                        return <QRCodeSVG value={inviteLink} size={320} className="w-full h-full" />;
+                      })()}
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-sm text-slate-700">Invite Link</p>
+                      <div className="wrap-break-word rounded-2xl bg-slate-50 p-3 text-xs text-slate-700 border border-slate-100">
+                        {`${window.location.origin}/signup?gym_id=${encodeURIComponent(gymSettings?.id ?? currentUserId ?? "")}`}
+                      </div>
+                    </div>
+
                   <Button onClick={handleCopyLink} className="w-full h-12 bg-primary/10 text-primary font-bold rounded-xl border border-primary/10">
                     Copy Invite Link
+                  </Button>
+                </div>
+              ) : addMemberTab === "Scan Member" ? (
+                <div className="text-center space-y-4">
+                  {/* ... existing Scan Member ... */}
+                  <p className="text-sm text-slate-600 font-medium">Point camera at member QR code</p>
+                  {!isScanningMember && (
+                    <div
+                      id="member-qr-reader"
+                      className="rounded-2xl border-2 border-dashed border-primary bg-slate-50 overflow-hidden"
+                      style={{ minHeight: "300px" }}
+                    />
+                  )}
+                  {isScanningMember && (
+                    <div className="flex flex-col items-center justify-center gap-3 py-12 rounded-2xl bg-slate-50">
+                      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                      <p className="text-sm font-medium text-slate-600">
+                        {isLinkingMember ? "Linking member..." : "Processing QR code..."}
+                      </p>
+                    </div>
+                  )}
+                  <Button
+                    variant="outline"
+                    onClick={handleCloseMemberQRScanner}
+                    disabled={isScanningMember}
+                    className="w-full h-12 rounded-2xl border-slate-200 text-slate-700 font-semibold"
+                  >
+                    Close Scanner
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <Label className="text-slate-600">Enter Member ID</Label>
+                    <div className="relative">
+                      <Input 
+                        value={memberIdToLink} 
+                        onChange={(e) => setMemberIdToLink(e.target.value)} 
+                        placeholder="e.g. 550e8400-e29b-41d4-a716-446655440000"
+                        className="bg-slate-50 text-slate-900 rounded-xl h-12 pr-10"
+                      />
+                      {isFetchingMemberToLink && (
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-400">Ask the member for their ID from their dashboard.</p>
+                  </div>
+
+                  {memberDetailsToLink && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="p-4 rounded-2xl bg-primary/5 border border-primary/20 flex items-center gap-4"
+                    >
+                      <div className="h-12 w-12 rounded-xl bg-primary/10 flex items-center justify-center text-primary overflow-hidden">
+                        {memberDetailsToLink.avatar_url ? (
+                          <img src={memberDetailsToLink.avatar_url} alt="" className="h-full w-full object-cover" />
+                        ) : (
+                          <UserPlus className="h-6 w-6" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-slate-900 truncate">{memberDetailsToLink.full_name}</p>
+                        <p className="text-[10px] text-slate-500 uppercase tracking-widest">Profile Found</p>
+                      </div>
+                      <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+                    </motion.div>
+                  )}
+
+                  <Button 
+                    onClick={() => handleLinkMemberToGym(memberIdToLink)} 
+                    disabled={isLinkingMember || !memberDetailsToLink}
+                    className="w-full h-12 bg-primary text-white font-bold rounded-xl shadow-glow"
+                  >
+                    {isLinkingMember ? "Linking..." : "Confirm & Link Member"}
                   </Button>
                 </div>
               )}
@@ -1527,7 +2257,7 @@ function DashboardPage() {
                 <h3 className="text-2xl font-bold text-white">Scan Member QR</h3>
                 <button onClick={() => setIsScanQROpen(false)}><X className="h-6 w-6 text-white/40" /></button>
               </div>
-              <div id="reader" className="aspect-square max-w-[280px] mx-auto rounded-3xl overflow-hidden bg-black border-2 border-primary/30"></div>
+              <div id="reader" className="aspect-square max-w-70 mx-auto rounded-3xl overflow-hidden bg-black border-2 border-primary/30"></div>
               <Button onClick={() => setIsScanQROpen(false)} className="w-full h-14 bg-white/10 text-white font-bold rounded-2xl">Close</Button>
             </motion.div>
           </div>
@@ -1535,6 +2265,7 @@ function DashboardPage() {
       </AnimatePresence>
     </div>
   </div>
+    </DashboardErrorBoundary>
 );
 }
 

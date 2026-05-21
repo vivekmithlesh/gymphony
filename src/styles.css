@@ -1,6 +1,8 @@
+@import "leaflet/dist/leaflet.css";
 @import "tailwindcss" source(none);
-@source "../src";
+@import "tailwindcss" source(none);
 @import "tw-animate-css";
+@source "../src";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -117,14 +119,25 @@
 
   html {
     scroll-behavior: smooth;
+    height: 100%;
+    width: 100%;
   }
 
   body {
-    background-color: var(--color-background);
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+    background-color: #F9FAFB;
     color: var(--color-foreground);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+  }
+
+  #root {
+    height: 100%;
+    width: 100%;
   }
 
   ::selection {
@@ -177,4 +190,88 @@
   .animate-float {
     animation: float 6s ease-in-out infinite;
   }
+
+
+  .leaflet-interactive {
+    transition: all 0.5s ease-out;
+  }
+  .custom-map-popup .leaflet-popup-content-wrapper {
+    border-radius: 1.5rem;
+    padding: 4px;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+  }
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #e2e8f0;
+    border-radius: 10px;
+  }
+}
+
+/* Leaderboard Map Markers Style */
+.marker-container {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pulse-ring {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  border: 3px solid;
+  border-radius: 50%;
+  animation: concentric-pulse 1.5s ease-out infinite;
+  opacity: 0;
+}
+
+@keyframes concentric-pulse {
+  0% { transform: scale(0.5); opacity: 0.8; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+.marker-pin {
+  width: 14px;
+  height: 14px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid white;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  z-index: 2;
+}
+
+.marker-dot {
+  width: 4px;
+  height: 4px;
+  background: white;
+  border-radius: 50%;
+}
+
+@keyframes marker-pulse {
+  0%, 100% {
+    opacity: 0.88;
+    filter: drop-shadow(0 0 0 rgba(239, 68, 68, 0));
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 10px rgba(239, 68, 68, 0.45));
+  }
+}
+
+.leaderboard-marker.leaflet-interactive.leaderboard-marker--active {
+  animation: marker-pulse 2.2s ease-in-out infinite;
+}
+
+.leaderboard-marker.leaflet-interactive.leaderboard-marker--idle {
+  filter: drop-shadow(0 0 6px rgba(139, 92, 246, 0.18));
 }

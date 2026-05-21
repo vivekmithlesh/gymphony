@@ -21,10 +21,13 @@ import { supabase } from "@/supabase";
 
 interface Member {
   id: string;
+  user_id?: string | null;
   full_name: string;
+  member_name?: string | null;
   mobile_number: string;
   membership_plan: string;
   avatar_url?: string | null;
+  gym_id?: string | null;
 }
 
 interface CheckIn {
@@ -33,19 +36,31 @@ interface CheckIn {
   created_at: string;
 }
 
+interface WorkoutLog {
+  id: string;
+  user_id?: string | null;
+  activity_type?: string | null;
+  duration_minutes?: number | null;
+  calories_burned?: number | null;
+  created_at: string;
+}
+
 export function AttendanceView() {
   const [searchQuery, setSearchQuery] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
   const [checkIns, setCheckIns] = useState<CheckIn[]>([]);
+  const [workoutLogs, setWorkoutLogs] = useState<WorkoutLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date(2026, 4)); // May 2026
   const [showPresent, setShowPresent] = useState(true);
   const [showAbsent, setShowAbsent] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [currentGymId, setCurrentGymId] = useState<string | null>(null);
 
   const checkInsControllerRef = useRef<AbortController | null>(null);
+  const workoutLogsControllerRef = useRef<AbortController | null>(null);
 
   // Initialize: Wait for Auth and then Fetch members
   useEffect(() => {
@@ -55,7 +70,19 @@ export function AttendanceView() {
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user && !controller.signal.aborted) {
-          await fetchMembers(controller.signal);
+          const { data: gymData, error: gymError } = await supabase
+            .from("gym_settings")
+            .select("id")
+            .eq("gym_owner_id", session.user.id)
+            .maybeSingle();
+
+          if (gymError) {
+            console.warn("Gym lookup error:", gymError.message);
+          }
+
+          const gymId = gymData?.id || null;
+          setCurrentGymId(gymId);
+          await fetchMembers(controller.signal, gymId);
         }
       } catch (error) {
         console.warn("Auth initialization error:", error);
@@ -73,23 +100,34 @@ export function AttendanceView() {
   useEffect(() => {
     if (selectedMemberId) {
       fetchCheckIns();
+      fetchWorkoutStats();
     }
     return () => {
       if (checkInsControllerRef.current) {
         checkInsControllerRef.current.abort();
       }
+      if (workoutLogsControllerRef.current) {
+        workoutLogsControllerRef.current.abort();
+      }
     };
-  }, [selectedMemberId, currentMonth, refreshKey]);
+  }, [selectedMemberId, currentMonth, refreshKey, currentGymId]);
 
-  const fetchMembers = async (signal: AbortSignal, retryCount = 0) => {
+  const fetchMembers = async (signal: AbortSignal, gymId?: string | null, retryCount = 0) => {
     console.log('Attempting to fetch members (Simple Fetch)...');
     setIsLoading(true);
     
     try {
-      // Simple fetch (no owner filter)
+      if (!gymId) {
+        setMembers([]);
+        setSelectedMemberId(null);
+        return;
+      }
+
+      // Fetch members from profiles for the current gym only
       const { data, error } = await supabase
-        .from('members')
-        .select('id, full_name, mobile_number, membership_plan, avatar_url')
+        .from('profiles')
+        .select('id, full_name, mobile_number, membership_plan, avatar_url, gym_id')
+        .eq('gym_id', gymId)
         .order('full_name')
         .abortSignal(signal);
 
@@ -101,9 +139,14 @@ export function AttendanceView() {
         return;
       }
 
-      setMembers(data || []);
-      if (data && data.length > 0 && !selectedMemberId) {
-        setSelectedMemberId(data[0].id);
+      const memberRows = data || [];
+      const uniqueMembersById = Array.from(
+        new Map(memberRows.map((member: any) => [member.id, member])).values()
+      );
+
+      setMembers(uniqueMembersById);
+      if (uniqueMembersById.length > 0 && !selectedMemberId) {
+        setSelectedMemberId(uniqueMembersById[0].id);
       }
     } catch (error: any) {
       if (error.name === 'AbortError' || error.message?.includes('abort') || error.message?.includes('Lock broken')) {
@@ -113,6 +156,47 @@ export function AttendanceView() {
       console.warn('Attendance fetch error:', error.message);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchWorkoutStats = async () => {
+    if (!selectedMemberId || !currentGymId) {
+      setWorkoutLogs([]);
+      return;
+    }
+
+    if (workoutLogsControllerRef.current) {
+      workoutLogsControllerRef.current.abort();
+    }
+    workoutLogsControllerRef.current = new AbortController();
+
+    try {
+      const startOfMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1).toISOString();
+      const endOfMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0, 23, 59, 59).toISOString();
+
+      const { data, error } = await supabase
+        .from("workout_logs")
+        .select("id, user_id, activity_type, duration_minutes, calories_burned, created_at")
+        .eq("user_id", selectedMemberId)
+        .eq("gym_id", currentGymId)
+        .gte("created_at", startOfMonth)
+        .lte("created_at", endOfMonth)
+        .abortSignal(workoutLogsControllerRef.current.signal);
+
+      if (error) {
+        if (error.name === 'AbortError' || error.message?.includes('abort') || error.message?.includes('Lock broken')) {
+          return;
+        }
+        console.warn("Workout stats fetch error:", error.message);
+        setWorkoutLogs([]);
+        return;
+      }
+
+      setWorkoutLogs(data || []);
+    } catch (error: any) {
+      if (error.name !== 'AbortError' && !error.message?.includes('abort') && !error.message?.includes('Lock broken')) {
+        console.warn("Silent fetch error in fetchWorkoutStats:", error.message);
+      }
     }
   };
 
@@ -153,16 +237,39 @@ export function AttendanceView() {
     }
   };
 
+  const uniqueMembers = useMemo(() => {
+    const seen = new Set<string>();
+
+    return members.filter((member) => {
+      const uniqueKey = member.user_id || member.id;
+
+      if (seen.has(uniqueKey)) {
+        return false;
+      }
+
+      seen.add(uniqueKey);
+      return true;
+    });
+  }, [members]);
+
   const filteredMembers = useMemo(() => 
-    members.filter(m => 
-      m.full_name.toLowerCase().includes(searchQuery.toLowerCase())
-    ), [members, searchQuery]
+    uniqueMembers.filter(m => 
+      (m.full_name || m.member_name || '').toLowerCase().includes(searchQuery.toLowerCase())
+    ), [uniqueMembers, searchQuery]
   );
 
   const selectedMember = useMemo(() => 
-    members.find(m => m.id === selectedMemberId), 
-    [members, selectedMemberId]
+    uniqueMembers.find(m => m.id === selectedMemberId), 
+    [uniqueMembers, selectedMemberId]
   );
+
+  const monthlyWorkoutStats = useMemo(() => {
+    const totalWorkouts = workoutLogs.length;
+    const totalDuration = workoutLogs.reduce((sum, log) => sum + (Number(log.duration_minutes) || 0), 0);
+    const totalCalories = workoutLogs.reduce((sum, log) => sum + (Number(log.calories_burned) || 0), 0);
+
+    return { totalWorkouts, totalDuration, totalCalories };
+  }, [workoutLogs]);
 
   const presentDates = useMemo(() => 
     checkIns.map(ci => new Date(ci.created_at)),
@@ -261,12 +368,6 @@ export function AttendanceView() {
     }
   };
 
-  const attendancePercentage = useMemo(() => {
-    const daysPassedInMonth = 1; // May 1st
-    const presentCount = presentDates.length;
-    return Math.round((presentCount / daysPassedInMonth) * 100) || 0;
-  }, [presentDates]);
-
   if (isLoading && !selectedMemberId) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
@@ -337,7 +438,7 @@ export function AttendanceView() {
               </div>
             </CardHeader>
             <CardContent className="p-0">
-              <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto custom-scrollbar">
+              <div className="divide-y divide-slate-100 max-h-125 overflow-y-auto custom-scrollbar">
                 {filteredMembers.map((member) => (
                   <button
                     key={member.id}
@@ -358,7 +459,7 @@ export function AttendanceView() {
                       </div>
                       <div>
                         <div className={`font-bold text-sm ${selectedMemberId === member.id ? "text-primary" : "text-slate-900"}`}>
-                          {member.full_name}
+                          {member.full_name || member.member_name || 'Member'}
                         </div>
                         <div className="text-xs text-muted-foreground capitalize">{member.membership_plan?.toLowerCase()}</div>
                       </div>
@@ -383,7 +484,7 @@ export function AttendanceView() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
             >
-              <Card className="border-primary/10 bg-gradient-to-br from-primary/5 to-white shadow-soft">
+              <Card className="border-primary/10 bg-linear-to-br from-primary/5 to-white shadow-soft">
                 <CardContent className="p-6">
                   <div className="flex items-center justify-between mb-4">
                     <h4 className="font-bold text-slate-900">Monthly Stats</h4>
@@ -391,13 +492,16 @@ export function AttendanceView() {
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Present Days</p>
-                      <p className="text-2xl font-black text-primary">{presentDates.length}</p>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Workout Sessions</p>
+                      <p className="text-2xl font-black text-primary">{monthlyWorkoutStats.totalWorkouts}</p>
                     </div>
                     <div className="space-y-1">
-                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Attendance %</p>
-                      <p className="text-2xl font-black text-green-500">{attendancePercentage}%</p>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Calories Burned</p>
+                      <p className="text-2xl font-black text-green-500">{monthlyWorkoutStats.totalCalories.toLocaleString()}</p>
                     </div>
+                  </div>
+                  <div className="mt-4 text-xs text-muted-foreground">
+                    Total workout time: <span className="font-bold text-slate-900">{monthlyWorkoutStats.totalDuration} min</span>
                   </div>
                 </CardContent>
               </Card>
@@ -416,7 +520,7 @@ export function AttendanceView() {
               transition={{ duration: 0.2 }}
             >
               {selectedMember && (
-                <Card className="border-border bg-white shadow-elegant overflow-hidden min-h-[600px]">
+                <Card className="border-border bg-white shadow-elegant overflow-hidden min-h-150">
                   <CardHeader className="border-b border-slate-50 bg-slate-50/50 p-6">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-4">
@@ -428,7 +532,7 @@ export function AttendanceView() {
                           )}
                         </div>
                         <div>
-                          <CardTitle className="text-xl font-bold text-slate-900">{selectedMember.full_name}</CardTitle>
+                          <CardTitle className="text-xl font-bold text-slate-900">{selectedMember.full_name || selectedMember.member_name || 'Member'}</CardTitle>
                           <CardDescription>Attendance log for {currentMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}</CardDescription>
                         </div>
                       </div>
@@ -502,8 +606,8 @@ export function AttendanceView() {
                           Attendance Insights
                         </h5>
                         <p className="text-sm text-muted-foreground leading-relaxed">
-                          {selectedMember.full_name} is showing <span className="text-slate-900 font-bold">consistent attendance</span> this month. 
-                          Overall consistency has improved compared to last month.
+                          {selectedMember.full_name || selectedMember.member_name || 'This member'} logged <span className="text-slate-900 font-bold">{monthlyWorkoutStats.totalWorkouts} workouts</span> this month.
+                          Total calories burned: <span className="text-slate-900 font-bold">{monthlyWorkoutStats.totalCalories.toLocaleString()}</span>.
                         </p>
                       </div>
                     </div>

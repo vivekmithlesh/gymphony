@@ -38,8 +38,10 @@ export function RevenueView() {
   const [isLoading, setIsLoading] = useState(true);
   const [payments, setPayments] = useState<any[]>([]);
   const [members, setMembers] = useState<any[]>([]);
+  const [profiles, setProfiles] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
   const [availablePlans, setAvailablePlans] = useState<any[]>([]);
+  const [currentGymId, setCurrentGymId] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // Get user session once on mount
@@ -48,6 +50,12 @@ export function RevenueView() {
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user?.id) {
         setCurrentUserId(session.user.id);
+        const { data: gymRow } = await supabase
+          .from("gym_settings")
+          .select("id")
+          .eq("gym_owner_id", session.user.id)
+          .maybeSingle();
+        setCurrentGymId(gymRow?.id || null);
       }
     };
     getUser();
@@ -73,6 +81,13 @@ export function RevenueView() {
           .eq("gym_owner_id", userId)
       ]);
 
+      const profilesRes = currentGymId
+        ? await supabase
+            .from("profiles")
+            .select("id, status, membership_plan, created_at, joining_date, expiry_date, amount_paid, full_name, gym_id")
+            .eq("gym_id", currentGymId)
+        : { data: [], error: null as any };
+
       if (paymentsRes.error) {
         console.error('Financial Fetch Error (payments):', paymentsRes.error);
         // We log the error clearly for the user to see in the console
@@ -88,6 +103,13 @@ export function RevenueView() {
       } else {
         console.log('Members data received:', membersRes.data?.length || 0, 'rows');
         setMembers(membersRes.data || []);
+      }
+
+      if (profilesRes.error) {
+        console.error('Financial Fetch Error (profiles):', profilesRes.error);
+        setProfiles([]);
+      } else {
+        setProfiles(profilesRes.data || []);
       }
 
       // Fetch expenses (optional - might not exist yet)
@@ -110,15 +132,22 @@ export function RevenueView() {
       }
 
       // Fetch available plans
-      const { data: plansData, error: plansError } = await supabase
-        .from("gym_plans")
-        .select("*")
-        .eq('gym_owner_id', userId)
-        .order("name", { ascending: true });
+      const fetchPlansForGym = async () => {
+        if (!currentGymId) return [];
 
-      if (!plansError) {
-        setAvailablePlans(plansData || []);
-      }
+        const { data: membershipPlans, error: membershipPlansError } = await supabase
+          .from("membership_plans")
+          .select("*")
+          .order("name", { ascending: true });
+
+        if (!membershipPlansError && membershipPlans) {
+          return membershipPlans.filter((plan) => String(plan.gym_id) === String(currentGymId));
+        }
+
+        return [];
+      };
+
+      setAvailablePlans(await fetchPlansForGym());
 
     } catch (error: any) {
       console.error("Financial Fetch Error (Global):", error);
@@ -126,7 +155,13 @@ export function RevenueView() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [currentGymId]);
+
+  useEffect(() => {
+    if (currentUserId && currentGymId) {
+      fetchData(currentUserId);
+    }
+  }, [currentUserId, currentGymId, fetchData]);
 
   useEffect(() => {
     if (currentUserId) {
@@ -137,6 +172,7 @@ export function RevenueView() {
         .channel("revenue_view_realtime")
         .on("postgres_changes", { event: "*", schema: "public", table: "payments" }, () => fetchData(currentUserId))
         .on("postgres_changes", { event: "*", schema: "public", table: "members" }, () => fetchData(currentUserId))
+        .on("postgres_changes", { event: "*", schema: "public", table: "membership_plans" }, () => fetchData(currentUserId))
         .subscribe();
 
       return () => {
@@ -277,36 +313,21 @@ export function RevenueView() {
   }, [members, payments]);
 
   const planDistribution = useMemo(() => {
-    // Priority: Fetch distinct plans from members table to ensure all active plans are shown
-    const distinctPlansFromMembers = Array.from(new Set(members.map(m => m.membership_plan).filter(Boolean)));
-    
-    if (distinctPlansFromMembers.length > 0) {
-      const colors = ['#8b5cf6', '#d946ef', '#ec4899', '#f43f5e', '#94a3b8', '#10b981', '#f59e0b'];
-      return distinctPlansFromMembers.map((planName, i) => {
-        const count = members.filter(m => m.membership_plan === planName).length;
-        return {
-          name: planName,
-          count: count,
-          color: colors[i % colors.length]
-        };
-      }).sort((a, b) => b.count - a.count);
-    }
+    const colors = ['#8b5cf6', '#d946ef', '#ec4899', '#f43f5e', '#94a3b8', '#10b981', '#f59e0b'];
+    const planNames = Array.from(new Set([
+      ...availablePlans.map((plan) => plan.name || plan.plan_name).filter(Boolean),
+      ...profiles.map((profile) => profile.membership_plan).filter(Boolean),
+    ]));
 
-    // Fallback to gym_plans if members table is empty
-    if (availablePlans.length > 0) {
-      return availablePlans.map((plan, i) => {
-        const count = members.filter(m => m.membership_plan === plan.name).length;
-        const colors = ['#8b5cf6', '#d946ef', '#ec4899', '#f43f5e', '#94a3b8'];
-        return {
-          name: plan.name,
-          count: count,
-          color: colors[i % colors.length]
-        };
-      }).filter(p => p.count > 0);
-    }
-
-    return [];
-  }, [members, availablePlans]);
+    return planNames.map((planName, i) => {
+      const count = profiles.filter(profile => profile.membership_plan === planName).length;
+      return {
+        name: planName,
+        count,
+        color: colors[i % colors.length]
+      };
+    }).sort((a, b) => b.count - a.count);
+  }, [profiles, availablePlans]);
 
   const handleExport = () => {
     const usePaymentsTable = payments.length > 0;
@@ -362,7 +383,7 @@ export function RevenueView() {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] space-y-4">
+      <div className="flex flex-col items-center justify-center min-h-100 space-y-4">
         <Loader2 className="h-8 w-8 text-primary animate-spin" />
         <p className="text-muted-foreground animate-pulse">Calculating financial metrics...</p>
       </div>
@@ -433,7 +454,7 @@ export function RevenueView() {
             <CardHeader>
               <CardTitle className="text-lg font-bold text-slate-900">Revenue Growth</CardTitle>
             </CardHeader>
-            <CardContent className="h-[350px] w-full pr-4">
+            <CardContent className="h-87.5 w-full pr-4">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={revenueChartData}>
                   <defs>
@@ -487,7 +508,7 @@ export function RevenueView() {
             <CardHeader>
               <CardTitle className="text-lg font-bold text-slate-900">Membership Plans</CardTitle>
             </CardHeader>
-            <CardContent className="h-[350px] w-full">
+            <CardContent className="h-87.5 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={planDistribution} margin={{ top: 20, right: 20, bottom: 20, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />

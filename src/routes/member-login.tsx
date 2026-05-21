@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Navbar } from "@/components/Navbar";
 import { supabase } from "@/supabase";
+// Member-login enforces member-only flow; avoid role fallback logic
 
 export const Route = createFileRoute("/member-login")({
   head: () => ({
@@ -33,6 +34,7 @@ function MemberLoginPage() {
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
+        // Always send users from this page to the member dashboard.
         navigate({ to: "/member-dashboard", replace: true });
       }
     };
@@ -41,41 +43,68 @@ function MemberLoginPage() {
 
   const ensureMemberProfile = async (user: any) => {
     try {
-      // Check if member record exists
-      const { data: existingMember, error: fetchError } = await supabase
+      console.log("DEBUG: Ensuring member profile for", user.id);
+      
+      const { data: profileRow, error: profileFetchError } = await supabase
+        .from("profiles")
+        .select("id, gym_id")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (profileFetchError) {
+        console.error("DEBUG: Error checking profile:", profileFetchError);
+      }
+
+      // 1. Create Profile if missing
+      if (!profileRow) {
+        console.log("DEBUG: Profile missing, creating default profile...");
+        const { error: profileInsertError } = await supabase
+          .from("profiles")
+          .insert([{
+            id: user.id,
+            full_name: user.user_metadata?.full_name || user.email?.split("@")[0] || "Member",
+            email: user.email,
+              status: "Active",
+              role: "member"
+          }]);
+        
+        if (profileInsertError) {
+          console.error("DEBUG: Profile insert failed:", profileInsertError);
+        }
+      }
+
+      // 2. Sync with members table (for owner visibility)
+      const { data: existingMember, error: memberFetchError } = await supabase
         .from("members")
         .select("id")
         .eq("id", user.id)
-        .single();
+        .maybeSingle();
 
-      if (fetchError && fetchError.code !== "PGRST116") {
-        console.error("Error checking existing member:", fetchError);
-        return;
+      if (memberFetchError) {
+        console.error("DEBUG: Error checking member table:", memberFetchError);
       }
 
       if (!existingMember) {
-        // Create new member record with default values
-        const { error: insertError } = await supabase
+        console.log("DEBUG: Member record missing, creating default...");
+        const { error: memberInsertError } = await supabase
           .from("members")
           .insert([
             {
               id: user.id,
               full_name: user.user_metadata?.full_name || user.email?.split("@")[0] || "New Member",
-              mobile_number: user.user_metadata?.phone || "",
-              status: "Pending",
-              membership_plan: null,
+              email: user.email,
+              status: "Active",
               joining_date: new Date().toISOString().split("T")[0],
+              role: "member",
             },
           ]);
 
-        if (insertError) {
-          console.error("Error creating member profile:", insertError);
-        } else {
-          console.log("Member profile created successfully");
+        if (memberInsertError) {
+          console.error("DEBUG: Member insert failed:", memberInsertError);
         }
       }
     } catch (err) {
-      console.error("Unexpected error in ensureMemberProfile:", err);
+      console.error("DEBUG: Unexpected error in ensureMemberProfile:", err);
     }
   };
 
@@ -99,6 +128,11 @@ function MemberLoginPage() {
           const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
             email,
             password,
+            options: {
+              data: {
+                role: "member",
+              },
+            },
           });
 
           if (signUpError) throw signUpError;
@@ -106,17 +140,17 @@ function MemberLoginPage() {
           if (signUpData.user) {
             await ensureMemberProfile(signUpData.user);
             toast.success("✅ Account created successfully!");
-            navigate({ to: "/member-dashboard" });
+            navigate({ to: "/member-dashboard", replace: true });
             return;
           }
         }
         throw error;
       }
 
-      if (data.user) {
+      if (data?.user) {
         await ensureMemberProfile(data.user);
         toast.success("✅ Welcome back!");
-        navigate({ to: "/member-dashboard" });
+        navigate({ to: "/member-dashboard", replace: true });
       }
     } catch (err: any) {
       toast.error(`Login error: ${err.message}`);
@@ -131,7 +165,7 @@ function MemberLoginPage() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: "http://localhost:8080/dashboard",
+          redirectTo: "http://localhost:8080/member-dashboard",
         },
       });
 
@@ -146,7 +180,7 @@ function MemberLoginPage() {
     <div className="min-h-screen bg-background text-foreground flex flex-col overflow-hidden">
       <Navbar />
       
-      <main className="flex-grow relative flex items-center justify-center px-6 py-12">
+      <main className="grow relative flex items-center justify-center px-6 py-12">
         {/* Background Decorative Elements */}
         <div className="glow-orb top-0 right-0 h-96 w-96 bg-primary-glow opacity-20" />
         <div className="glow-orb bottom-0 left-0 h-80 w-80 bg-primary opacity-10" />
