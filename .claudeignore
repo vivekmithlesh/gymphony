@@ -1,0 +1,24 @@
+# Dependencies (Token bachane ke liye)
+node_modules/
+.pnp
+.pnp.js
+
+# Build files
+dist/
+build/
+.next/
+out/
+
+# Environment variables (Security ke liye - SABSE ZAROORI)
+.env
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.dbSS
