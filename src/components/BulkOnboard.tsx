@@ -9,6 +9,8 @@ import {
   FileSpreadsheet,
   Send,
   AlertTriangle,
+  MessageCircle,
+  CheckCircle2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -21,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { supabase } from "@/supabase";
-import { isValidInternationalPhone, normalizeToE164Phone } from "@/lib/phone";
+import { isValidInternationalPhone, normalizeToE164Phone, phoneForWaMe } from "@/lib/phone";
 
 interface ParsedRow {
   id: string;
@@ -29,6 +31,19 @@ interface ParsedRow {
   phone: string;
   plan: string;
 }
+
+interface InviteRecord {
+  id: string;
+  name: string;
+  phone: string;
+  link: string;
+  message: string;
+  sent: boolean;
+}
+
+// Optional: set VITE_INVITE_WEBHOOK_URL to an n8n/automation endpoint to send
+// invites fully automatically. If unset, owners send via WhatsApp deep links.
+const INVITE_WEBHOOK = (import.meta as any).env?.VITE_INVITE_WEBHOOK_URL as string | undefined;
 
 interface BulkOnboardProps {
   open: boolean;
@@ -65,8 +80,9 @@ const parseCsv = (text: string): ParsedRow[] => {
 };
 
 export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, onComplete }: BulkOnboardProps) {
-  const [stage, setStage] = useState<"upload" | "review">("upload");
+  const [stage, setStage] = useState<"upload" | "review" | "sent">("upload");
   const [rows, setRows] = useState<ParsedRow[]>([]);
+  const [invites, setInvites] = useState<InviteRecord[]>([]);
   const [isParsing, setIsParsing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -78,6 +94,7 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
   const reset = () => {
     setStage("upload");
     setRows([]);
+    setInvites([]);
     setIsParsing(false);
     setIsSaving(false);
   };
@@ -153,19 +170,47 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
     return `${window.location.origin}/signup?${params.toString()}`;
   };
 
-  // Mock invite trigger — stands in for the real WhatsApp/SMS send.
-  const sendInvite = (member: { id: string; full_name?: string | null; mobile_number?: string | null }) => {
+  const buildInvite = (member: {
+    id: string;
+    full_name?: string | null;
+    mobile_number?: string | null;
+  }): InviteRecord => {
     const phoneE164 = member.mobile_number || "";
     const link = buildInviteLink(member.id, phoneE164);
     const message =
       `You are now a member of ${gymName || "our gym"}. ` +
       `Click here to join Gymphony to track your attendance and fees: ${link}`;
+    return { id: member.id, name: member.full_name || "Member", phone: phoneE164, link, message, sent: false };
+  };
 
-    // TODO: Replace this mock with a real send, e.g.:
-    //   await supabase.functions.invoke('send-invite', {
-    //     body: { to: phoneE164, message, channel: 'whatsapp' },
-    //   });
-    console.log(`[MOCK INVITE → ${phoneE164}]`, message);
+  // Automated send via a configured webhook (n8n / SMS/WhatsApp provider).
+  const sendViaWebhook = async (inv: InviteRecord): Promise<boolean> => {
+    if (!INVITE_WEBHOOK) return false;
+    try {
+      const res = await fetch(INVITE_WEBHOOK, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: inv.name, phone: inv.phone, message: inv.message, link: inv.link, gym: gymName }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  // Manual send: open WhatsApp pre-filled so the owner sends from their own number.
+  const openWhatsApp = (inv: InviteRecord) => {
+    window.open(
+      `https://wa.me/${phoneForWaMe(inv.phone)}?text=${encodeURIComponent(inv.message)}`,
+      "_blank",
+      "noopener"
+    );
+    setInvites((prev) => prev.map((x) => (x.id === inv.id ? { ...x, sent: true } : x)));
+  };
+
+  // Open each invite in sequence (small gap so the browser allows the tabs).
+  const sendAll = () => {
+    invites.forEach((inv, i) => setTimeout(() => openWhatsApp(inv), i * 400));
   };
 
   // STEP 2 — Bulk insert (status 'pending_signup') + fire invites.
@@ -205,24 +250,43 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
 
       if (error) throw error;
 
-      // Fire the (mock) invites.
-      (data || []).forEach(sendInvite);
+      const built = (data || []).map(buildInvite);
 
-      // Log the bulk action for the owner's activity feed.
+      // Send automatically if a webhook is configured; otherwise the owner sends
+      // each via WhatsApp from the next step.
+      let autoSent = 0;
+      if (INVITE_WEBHOOK) {
+        await Promise.all(
+          built.map(async (inv, i) => {
+            const ok = await sendViaWebhook(inv);
+            if (ok) {
+              built[i].sent = true;
+              autoSent += 1;
+            }
+          })
+        );
+      }
+
       if (gymOwnerId) {
         await supabase.from("activity_log").insert([
           {
             gym_owner_id: gymOwnerId,
             activity_type: "bulk_onboard",
-            description: `Bulk-onboarded ${data?.length ?? 0} member(s) and sent invites.`,
+            description: `Bulk-onboarded ${built.length} member(s) and prepared invites.`,
             is_read: false,
           },
         ]);
       }
 
-      toast.success(`${data?.length ?? 0} member(s) added & invites sent!`);
-      onComplete();
-      close();
+      setInvites(built);
+      setStage("sent");
+      onComplete(); // refresh the members list now
+
+      toast.success(
+        autoSent > 0
+          ? `${built.length} added — ${autoSent} invite(s) sent automatically.`
+          : `${built.length} member(s) added. Send their invites below.`
+      );
     } catch (err: any) {
       console.warn("Bulk onboard failed:", err);
       toast.error(`Could not save members: ${err?.message || "unknown error"}`);
@@ -255,7 +319,9 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
               <p className="text-sm text-slate-500">
                 {stage === "upload"
                   ? "Upload a CSV/Excel or a photo of your member register."
-                  : "Review, fix typos, and remove invalid rows before saving."}
+                  : stage === "review"
+                    ? "Review, fix typos, and remove invalid rows before saving."
+                    : "Members added — send their invites on WhatsApp."}
               </p>
             </div>
           </div>
@@ -305,7 +371,7 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
               Excel/photos are simulated with sample rows you can edit.
             </p>
           </div>
-        ) : (
+        ) : stage === "review" ? (
           /* ---- STEP 1 cont.: Editable data grid ---- */
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex items-center justify-between mb-3">
@@ -413,6 +479,58 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
                     <Send className="h-4 w-4" /> Save &amp; Send Invites ({validRows.length})
                   </>
                 )}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          /* ---- STEP 2 cont.: Send invites (real WhatsApp / optional webhook) ---- */
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-sm font-semibold text-slate-700">
+                {invites.length} member{invites.length === 1 ? "" : "s"} ready to invite
+              </p>
+              <Button
+                onClick={sendAll}
+                className="h-9 rounded-lg bg-green-600 hover:bg-green-700 text-white font-bold"
+              >
+                <MessageCircle className="h-4 w-4 mr-1.5" /> Send all on WhatsApp
+              </Button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto rounded-2xl border border-slate-200 divide-y divide-slate-100 custom-scrollbar">
+              {invites.map((inv) => (
+                <div key={inv.id} className="flex items-center justify-between px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-900 truncate">{inv.name}</p>
+                    <p className="text-xs text-slate-500">{inv.phone}</p>
+                  </div>
+                  <Button
+                    onClick={() => openWhatsApp(inv)}
+                    variant="outline"
+                    className={`h-9 rounded-lg font-semibold ${
+                      inv.sent
+                        ? "border-green-200 text-green-600 bg-green-50"
+                        : "border-slate-200 text-slate-700 hover:bg-green-50 hover:text-green-600"
+                    }`}
+                  >
+                    {inv.sent ? (
+                      <><CheckCircle2 className="h-4 w-4 mr-1.5" /> Sent</>
+                    ) : (
+                      <><MessageCircle className="h-4 w-4 mr-1.5" /> Send</>
+                    )}
+                  </Button>
+                </div>
+              ))}
+            </div>
+
+            <p className="text-[11px] text-slate-400 mt-3">
+              “Send” opens WhatsApp with the invite pre-filled — you send it from your own number.
+              {INVITE_WEBHOOK ? " Automated sending is also enabled via your webhook." : ""}
+            </p>
+
+            <div className="pt-4">
+              <Button onClick={close} className="w-full h-12 rounded-xl bg-primary text-white font-bold">
+                Done
               </Button>
             </div>
           </div>
