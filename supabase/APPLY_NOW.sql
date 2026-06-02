@@ -106,14 +106,16 @@ set gym_id = m.gym_id
 from public.members m
 where ci.gym_id is null
   and ci.member_id = m.id
-  and m.gym_id is not null;
+  and m.gym_id is not null
+  and exists (select 1 from public.gym_settings g where g.id = m.gym_id);
 
 update public.check_ins ci
 set gym_id = p.gym_id
 from public.profiles p
 where ci.gym_id is null
   and ci.member_id = p.id
-  and p.gym_id is not null;
+  and p.gym_id is not null
+  and exists (select 1 from public.gym_settings g where g.id = p.gym_id);
 
 -- 3. Defensive cleanup: null out any gym_id that does not point at a real gym,
 --    so the foreign key can be added without failing on legacy/orphan data.
