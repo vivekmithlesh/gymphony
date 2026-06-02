@@ -252,8 +252,9 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
 
       const built = (data || []).map(buildInvite);
 
-      // Send automatically if a webhook is configured; otherwise the owner sends
-      // each via WhatsApp from the next step.
+      // Automated delivery: prefer a configured webhook, else the send-invite
+      // edge function (WhatsApp Cloud API / Twilio). If neither delivers, the
+      // owner sends each via WhatsApp from the next step.
       let autoSent = 0;
       if (INVITE_WEBHOOK) {
         await Promise.all(
@@ -265,6 +266,31 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
             }
           })
         );
+      } else {
+        try {
+          const { data: sendData, error: sendErr } = await supabase.functions.invoke("send-invite", {
+            body: {
+              gymName,
+              invites: built.map((b) => ({ name: b.name, phone: b.phone, message: b.message, link: b.link })),
+            },
+          });
+          if (!sendErr && sendData?.results) {
+            const sentPhones = new Set(
+              (sendData.results as { phone: string; sent: boolean }[])
+                .filter((r) => r.sent)
+                .map((r) => r.phone)
+            );
+            built.forEach((b, i) => {
+              if (sentPhones.has(b.phone)) {
+                built[i].sent = true;
+                autoSent += 1;
+              }
+            });
+          }
+        } catch (e) {
+          // Function not deployed / no provider keys — fall back to manual WhatsApp.
+          console.warn("send-invite unavailable, using manual WhatsApp:", e);
+        }
       }
 
       if (gymOwnerId) {
