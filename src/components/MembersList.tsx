@@ -13,7 +13,8 @@ import {
   X,
   Sparkles,
   DollarSign,
-  MessageSquare
+  MessageSquare,
+  Upload
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { 
@@ -33,6 +34,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { BackButton } from "./BackButton";
+import { BulkOnboard } from "./BulkOnboard";
 import { supabase } from "@/supabase";
 import { QRCodeSVG } from "qrcode.react";
 import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
@@ -146,6 +148,8 @@ export function MembersList() {
   const [isUpdating, setIsUpdating] = useState(false);
   const [availablePlans, setAvailablePlans] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [isBulkOpen, setIsBulkOpen] = useState(false);
+  const [gymMeta, setGymMeta] = useState<{ id: string | null; name: string }>({ id: null, name: "" });
   const [editForm, setEditForm] = useState({
     full_name: "",
     mobile_number: "",
@@ -242,7 +246,7 @@ export function MembersList() {
       // 1. First get the owner's Gym ID
       const { data: gymData, error: gymError } = await supabase
         .from("gym_settings")
-        .select("id")
+        .select("id, gym_name")
         .eq("gym_owner_id", userId)
         .maybeSingle();
 
@@ -251,6 +255,7 @@ export function MembersList() {
       }
 
       const gymId = gymData?.id;
+      setGymMeta({ id: gymId ?? null, name: gymData?.gym_name ?? "" });
       console.log('Fetching Members with owner filters:', { userId, gymId });
 
       // 2. Fetch members belonging to this gym or directly added by this owner
@@ -575,6 +580,13 @@ export function MembersList() {
         </div>
         
         <div className="flex items-center gap-3 w-full md:w-auto">
+          <Button
+            onClick={() => setIsBulkOpen(true)}
+            variant="outline"
+            className="h-10 rounded-xl border-slate-200 bg-white text-slate-700 font-semibold hover:bg-primary/5 hover:text-primary whitespace-nowrap"
+          >
+            <Upload className="h-4 w-4 mr-2 text-primary" /> Upload Data
+          </Button>
           <Filter className="h-4 w-4 text-muted-foreground hidden md:block" />
           <Select value={filterStatus} onValueChange={setFilterStatus}>
             <SelectTrigger className="w-full md:w-45 bg-white border-slate-200 rounded-xl text-slate-900">
@@ -588,6 +600,17 @@ export function MembersList() {
           </Select>
         </div>
       </div>
+
+      {/* Bulk Onboarding & Auto-Invite */}
+      <BulkOnboard
+        open={isBulkOpen}
+        onClose={() => setIsBulkOpen(false)}
+        gymId={gymMeta.id}
+        gymOwnerId={currentUser?.id ?? null}
+        gymName={gymMeta.name}
+        plans={availablePlans}
+        onComplete={fetchMembers}
+      />
 
       {/* Data Table */}
       <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-soft">
