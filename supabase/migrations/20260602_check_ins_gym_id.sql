@@ -45,9 +45,14 @@ begin
   if not exists (
     select 1 from pg_constraint where conname = 'check_ins_gym_id_fkey'
   ) then
+    -- NOT VALID: create the FK without scanning existing rows (some legacy rows
+    -- may carry a stale gym_id). New inserts/updates are still enforced, and the
+    -- app only ever writes valid gym_settings ids. Run the optional VALIDATE
+    -- below once the data is cleaned if you want full historical enforcement.
     alter table public.check_ins
       add constraint check_ins_gym_id_fkey
-      foreign key (gym_id) references public.gym_settings(id) on delete cascade;
+      foreign key (gym_id) references public.gym_settings(id) on delete cascade
+      not valid;
   end if;
 end$$;
 
