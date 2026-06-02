@@ -10,10 +10,21 @@
 //   { sentCount, total, results: [{ phone, sent, channel }] }
 //
 // Secrets (set whichever provider you use):
-//   WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID   (WhatsApp Cloud API)
+//   WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID            (WhatsApp Cloud API)
+//   WHATSAPP_TEMPLATE_NAME                              (approved template — required
+//                                                        for cold/business-initiated invites)
+//   WHATSAPP_TEMPLATE_LANG  (optional, default "en")    (template language code)
 //   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER   (SMS fallback)
 // If none are configured, every invite returns sent:false and the dashboard
 // falls back to manual WhatsApp deep links — nothing breaks.
+//
+// WhatsApp policy: messages to people who have NOT messaged you in the last 24h
+// MUST use a pre-approved template. Register a template in WhatsApp Manager whose
+// body is EXACTLY (two variables):
+//   "You are now a member of {{1}}. Click here to join Gymphony to track your
+//    attendance and fees: {{2}}"
+//   {{1}} = gym name, {{2}} = invite link.
+// Then set WHATSAPP_TEMPLATE_NAME to that template's name.
 // =============================================================================
 
 import { corsHeaders } from "../_shared/cors.ts";
@@ -34,22 +45,51 @@ const json = (body: unknown, status = 200): Response =>
   });
 
 // --- WhatsApp Cloud API ------------------------------------------------------
-async function sendWhatsApp(invite: Invite): Promise<boolean> {
+async function sendWhatsApp(invite: Invite, gymName: string): Promise<boolean> {
   const token = Deno.env.get("WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
   if (!token || !phoneId) return false; // provider not configured
 
   const to = invite.phone.replace(/[^\d]/g, ""); // Cloud API wants digits only
-  try {
-    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneId}/messages`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
+  const templateName = Deno.env.get("WHATSAPP_TEMPLATE_NAME");
+  const templateLang = Deno.env.get("WHATSAPP_TEMPLATE_LANG") || "en";
+
+  // Template variables can't contain newlines, tabs, or 5+ consecutive spaces.
+  const clean = (s: string) => (s || "").replace(/[\n\t]+/g, " ").replace(/ {5,}/g, " ").trim();
+
+  // Prefer the approved TEMPLATE (compliant for cold invites). Fall back to a
+  // plain text message only when no template is set (valid inside the 24h window).
+  const body: Record<string, unknown> = templateName
+    ? {
+        messaging_product: "whatsapp",
+        to,
+        type: "template",
+        template: {
+          name: templateName,
+          language: { code: templateLang },
+          components: [
+            {
+              type: "body",
+              parameters: [
+                { type: "text", text: clean(gymName) || "our gym" },        // {{1}}
+                { type: "text", text: clean(invite.link || invite.message) }, // {{2}}
+              ],
+            },
+          ],
+        },
+      }
+    : {
         messaging_product: "whatsapp",
         to,
         type: "text",
         text: { body: invite.message },
-      }),
+      };
+
+  try {
+    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
     if (!res.ok) console.warn("[send-invite] WhatsApp send failed:", await res.text());
     return res.ok;
@@ -108,7 +148,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         continue;
       }
       // WhatsApp first, then SMS fallback.
-      let sent = await sendWhatsApp(inv);
+      let sent = await sendWhatsApp(inv, payload.gymName || "");
       let channel = "whatsapp";
       if (!sent) {
         sent = await sendSms(inv);
