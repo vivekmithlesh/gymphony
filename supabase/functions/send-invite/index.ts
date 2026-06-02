@@ -19,11 +19,15 @@
 // falls back to manual WhatsApp deep links — nothing breaks.
 //
 // WhatsApp policy: messages to people who have NOT messaged you in the last 24h
-// MUST use a pre-approved template. Register a template in WhatsApp Manager whose
-// body is EXACTLY (two variables):
-//   "You are now a member of {{1}}. Click here to join Gymphony to track your
-//    attendance and fees: {{2}}"
-//   {{1}} = gym name, {{2}} = invite link.
+// MUST use a pre-approved template. Register a template in WhatsApp Manager with:
+//   • BODY (1 variable):
+//       "Welcome to {{1}}! 🎉 Tap the button below to activate your Gymphony
+//        membership and start tracking your attendance and fees."   ({{1}} = gym name)
+//   • A call-to-action URL BUTTON (type: "Visit website" → Dynamic), with:
+//       button text:  "Activate Membership"
+//       URL base:     https://<your-domain>/signup?{{1}}
+//     The function fills the button's {{1}} with the invite's query string
+//     (gym_id=…&phone=…&token=…), so each member gets their own locked link.
 // Then set WHATSAPP_TEMPLATE_NAME to that template's name.
 // =============================================================================
 
@@ -57,8 +61,22 @@ async function sendWhatsApp(invite: Invite, gymName: string): Promise<boolean> {
   // Template variables can't contain newlines, tabs, or 5+ consecutive spaces.
   const clean = (s: string) => (s || "").replace(/[\n\t]+/g, " ").replace(/ {5,}/g, " ").trim();
 
-  // Prefer the approved TEMPLATE (compliant for cold invites). Fall back to a
-  // plain text message only when no template is set (valid inside the 24h window).
+  // URL-button dynamic value: the query-string portion of the invite link
+  // (gym_id=…&phone=…&token=…). The template's button URL base
+  // (https://<domain>/signup?{{1}}) is configured in WhatsApp Manager; we only
+  // supply this variable suffix. A URL button param must NOT contain spaces.
+  const urlSuffix = (() => {
+    try {
+      const u = new URL(invite.link || "");
+      return (u.search ? u.search.replace(/^\?/, "") : u.pathname.replace(/^\//, "")).replace(/\s+/g, "");
+    } catch {
+      return ((invite.link || "").split("?")[1] || invite.link || "").replace(/\s+/g, "");
+    }
+  })();
+
+  // Prefer the approved TEMPLATE (compliant for cold invites) with a premium
+  // call-to-action URL button. Fall back to plain text only when no template is
+  // set (valid inside the 24h window — for testing).
   const body: Record<string, unknown> = templateName
     ? {
         messaging_product: "whatsapp",
@@ -70,10 +88,13 @@ async function sendWhatsApp(invite: Invite, gymName: string): Promise<boolean> {
           components: [
             {
               type: "body",
-              parameters: [
-                { type: "text", text: clean(gymName) || "our gym" },        // {{1}}
-                { type: "text", text: clean(invite.link || invite.message) }, // {{2}}
-              ],
+              parameters: [{ type: "text", text: clean(gymName) || "our gym" }], // body {{1}}
+            },
+            {
+              type: "button",
+              sub_type: "url",
+              index: "0",
+              parameters: [{ type: "text", text: urlSuffix }], // button URL {{1}}
             },
           ],
         },
