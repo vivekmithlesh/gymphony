@@ -47,37 +47,49 @@ begin
   end if;
 
   -- Resolve the plan's duration so we can set the expiry; default 30 days.
-  select coalesce(gp.duration_days, gp.duration * 30, 30)
+  -- duration/duration_days may be stored as text or int depending on the DB, so
+  -- cast via text and guard against non-numeric values (fallback to the default).
+  select coalesce(
+    case when (gp.duration_days)::text ~ '^[0-9]+$' then (gp.duration_days)::text::int end,
+    case when (gp.duration)::text      ~ '^[0-9]+$' then (gp.duration)::text::int * 30 end,
+    30
+  )
     into v_duration
   from public.gym_plans gp
-  where gp.gym_id = v_gym and (gp.name = v_plan or gp.plan_name = v_plan)
+  where gp.gym_id = v_gym and gp.name = v_plan
   order by gp.created_at desc
   limit 1;
   if v_duration is null then v_duration := 30; end if;
+
+  -- The plan starts on approval and runs for its full duration — a clean,
+  -- predictable window (approval date → approval date + duration).
   v_expiry := now() + make_interval(days => v_duration);
 
   -- Flip the payment to Success.
   update public.payments set status = 'Success' where id = p_payment_id;
 
-  -- Activate the member.
-  update public.members
-    set status = 'Active', membership_plan = v_plan, expiry_date = v_expiry
-  where id = v_member;
-
+  -- Activate the member. `members` is a non-updatable JOIN view, so we write the
+  -- membership fields to the base `profiles` table that backs it.
   update public.profiles
-    set status = 'Active', subscription_status = 'Active'
+    set status          = 'Active',
+        membership_plan = v_plan,
+        expiry_date     = v_expiry
   where id = v_member;
 
-  -- Owner activity feed.
-  select coalesce(m.full_name, m.member_name, 'A member')
-    into v_member_name from public.members m where m.id = v_member;
+  -- Owner activity feed — best-effort only. Wrapped so ANY error here (e.g.
+  -- schema drift in activity_log) can never block a real approval.
+  begin
+    select coalesce(m.full_name, m.member_name, 'A member')
+      into v_member_name from public.members m where m.id = v_member;
 
-  insert into public.activity_log (gym_owner_id, activity_type, description, is_read)
-  values (
-    v_owner, 'payment',
-    coalesce(v_member_name, 'A member') || ' payment of ₹' || v_amount::text || ' approved (' || coalesce(v_plan, 'plan') || ').',
-    false
-  );
+    insert into public.activity_log (gym_owner_id, activity_type, description)
+    values (
+      v_owner, 'payment',
+      coalesce(v_member_name, 'A member') || ' payment of Rs ' || v_amount::text || ' approved (' || coalesce(v_plan, 'plan') || ').'
+    );
+  exception when others then
+    null;
+  end;
 
   return jsonb_build_object('success', true, 'expiry_date', v_expiry, 'plan', v_plan);
 end;

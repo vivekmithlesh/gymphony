@@ -39,6 +39,7 @@ import { supabase } from "@/supabase";
 import { QRCodeSVG } from "qrcode.react";
 import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
 import { isValidInternationalPhone, normalizeToE164Phone, phoneForWaMe } from "@/lib/phone";
+import { isApprovedPayment } from "@/lib/revenue";
 
 // Optimized Member Row Component
 const MemberRow = memo(({ 
@@ -289,26 +290,33 @@ export function MembersList() {
       const memberIds = memberRows.map((member: any) => member.id).filter(Boolean);
 
       if (memberIds.length > 0) {
-        const { data: profileAmounts, error: profileAmountsError } = await supabase
-          .from("profiles")
-          .select("id, amount_paid")
-          .in("id", memberIds);
+        // "Amount Paid" is derived from the payments ledger — counting ONLY
+        // approved (Paid/Success) rows — so it matches the Dashboard and Revenue
+        // pages and never shows stale profiles.amount_paid test data or
+        // unapproved (pending_verification/rejected) payments.
+        const { data: paymentRows, error: paymentsError } = await supabase
+          .from("payments")
+          .select("member_id, amount, status")
+          .in("member_id", memberIds);
 
-        if (!profileAmountsError) {
-          const amountPaidById = new Map(
-            (profileAmounts || []).map((row: any) => [row.id, Number(row.amount_paid) || 0])
-          );
+        if (!paymentsError) {
+          const paidByMember = new Map<string, number>();
+          for (const p of paymentRows || []) {
+            if (!isApprovedPayment(p.status)) continue;
+            paidByMember.set(
+              p.member_id,
+              (paidByMember.get(p.member_id) || 0) + (Number(p.amount) || 0)
+            );
+          }
 
           setMembers(
             memberRows.map((member: any) => ({
               ...member,
-              amount_paid: amountPaidById.has(member.id)
-                ? amountPaidById.get(member.id)
-                : Number(member.amount_paid) || 0
+              amount_paid: paidByMember.get(member.id) || 0
             }))
           );
         } else {
-          console.warn("Profile amount fetch error:", profileAmountsError.message);
+          console.warn("Payments fetch error:", paymentsError.message);
           setMembers(memberRows);
         }
       } else {
@@ -507,15 +515,23 @@ export function MembersList() {
         return;
       }
 
-      // 1. Update member's amount_paid in the base table
+      // 1. Record the collected payment in the ledger as an approved ('Paid')
+      //    row. The "Amount Paid" column, Dashboard and Revenue pages all derive
+      //    from approved payments, so writing here (not profiles.amount_paid) is
+      //    what makes the collection show up. The app_fill_payment_owner trigger
+      //    backfills gym_owner_id/gym_id from the members view.
       const currentPaid = Number(paymentMember.amount_paid || 0);
       const newTotal = currentPaid + amount;
 
       const { error: updateError } = await supabase
-        .from("profiles")
-        .update({ amount_paid: newTotal })
-        .eq("id", paymentMember.id)
-        .eq("gym_owner_id", userId);
+        .from("payments")
+        .insert([{
+          member_id: paymentMember.id,
+          gym_owner_id: userId,
+          amount: amount,
+          status: 'Paid',
+          payment_date: new Date().toISOString(),
+        }]);
 
       if (updateError) throw updateError;
 

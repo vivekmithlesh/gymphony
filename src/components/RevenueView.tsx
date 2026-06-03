@@ -37,6 +37,7 @@ import { toast } from "sonner";
 import { BackButton } from "./BackButton";
 import { supabase } from "@/supabase";
 import { hasAccess } from "@/lib/permissions";
+import { isApprovedPayment } from "@/lib/revenue";
 import { ProtectedProRoute } from "./ProtectedProRoute";
 import { Lock, Crown } from "lucide-react";
 
@@ -194,15 +195,19 @@ export function RevenueView() {
     const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
     const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
 
-    // Use payments table for revenue if available, fallback to members table
-    const usePaymentsTable = payments.length > 0;
+    // Revenue counts ONLY approved payments (Paid/Success) — pending_verification
+    // and rejected rows must never inflate the cards or chart. See lib/revenue.ts.
+    const approvedPayments = payments.filter(p => isApprovedPayment(p.status));
 
-    const currentMonthPayments = payments.filter(p => {
+    // Use payments table for revenue if available, fallback to members table
+    const usePaymentsTable = approvedPayments.length > 0;
+
+    const currentMonthPayments = approvedPayments.filter(p => {
       const d = new Date(p.created_at);
       return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
     });
 
-    const lastMonthPayments = payments.filter(p => {
+    const lastMonthPayments = approvedPayments.filter(p => {
       const d = new Date(p.created_at);
       return d.getMonth() === lastMonth && d.getFullYear() === lastMonthYear;
     });
@@ -236,7 +241,7 @@ export function RevenueView() {
     const avgChange = lastAvgPerMember === 0 ? 100 : ((avgPerMember - lastAvgPerMember) / lastAvgPerMember) * 100;
 
     const totalRevenue = usePaymentsTable
-      ? payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
+      ? approvedPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
       : members.reduce((sum, m) => sum + (Number(m.amount_paid) || 0), 0);
 
     // 0% platform fee — the gym owner keeps 100% of what members pay, so Net
@@ -332,7 +337,9 @@ export function RevenueView() {
   // so the area starts plotting from the registration month; their tooltip shows
   // a "registered since" note instead.
   const revenueChartData = useMemo(() => {
-    const usePaymentsTable = payments.length > 0;
+    // Chart plots realized revenue only — same approved-payment rule as the cards.
+    const approvedPayments = payments.filter(p => isApprovedPayment(p.status));
+    const usePaymentsTable = approvedPayments.length > 0;
 
     const regDate = gymCreatedAt ? new Date(gymCreatedAt) : null;
     const hasReg = regDate != null && !isNaN(regDate.getTime());
@@ -348,7 +355,7 @@ export function RevenueView() {
 
       let amount = 0;
       if (usePaymentsTable) {
-        amount = payments
+        amount = approvedPayments
           .filter((p) => {
             const pd = new Date(p.created_at);
             return pd.getMonth() === monthIndex && pd.getFullYear() === selectedYear;
@@ -426,7 +433,10 @@ export function RevenueView() {
 
   const handleExport = async () => {
     if (isExporting) return;
-    const usePaymentsTable = payments.length > 0;
+    // The report is a realized-revenue ledger: only approved (Paid/Success)
+    // payments are exported, so the rows sum to the "Total Revenue" totals line.
+    const approvedPayments = payments.filter((p) => isApprovedPayment(p.status));
+    const usePaymentsTable = approvedPayments.length > 0;
 
     // The payments table only stores member_id (schema: id, member_id, amount,
     // payment_method, status, created_at, gym_owner_id) — no name column. So we
@@ -451,7 +461,7 @@ export function RevenueView() {
     // column as numeric; Date/Status are strings.
     type ExportRow = { Date: string; "Member Name": string; "Amount Paid": number; Status: string };
     const rows: ExportRow[] = usePaymentsTable
-      ? payments.map((p) => ({
+      ? approvedPayments.map((p) => ({
           Date: formatDate(p.created_at),
           "Member Name": memberNameById.get(String(p.member_id)) || "Unknown Member",
           "Amount Paid": Number(p.amount) || 0,

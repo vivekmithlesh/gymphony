@@ -56,12 +56,14 @@ import { Html5QrcodeScanner } from "html5-qrcode";
 import { supabase, supabaseUrl } from "@/supabase";
 import { initiatePhonePePayment, finalizeUpgrade as finalizePhonePeUpgrade } from "@/lib/phonepe";
 import { hasAccess, FeatureName, LIMITS } from "@/lib/permissions";
+import { isApprovedPayment } from "@/lib/revenue";
 import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
 import { MembersList } from "@/components/MembersList";
 
 import { FeatureLock } from "@/components/FeatureLock";
 import RetentionWidget from "@/components/RetentionWidget";
 import { OwnerPendingPayments } from "@/components/OwnerPendingPayments";
+import { OwnerPendingStorePurchases } from "@/components/OwnerPendingStorePurchases";
 import WhatsAppBotWidget from "@/components/WhatsAppBotWidget";
 import AttendanceHeatmap from "@/components/AttendanceHeatmap";
 import { InventoryManager } from "@/components/InventoryManager";
@@ -739,6 +741,23 @@ function DashboardPage() {
       setActiveMembersCount(activeCount);
       statsCache.activeMembersCount = activeCount;
 
+      // Revenue comes from the payments ledger, NOT members.amount_paid — and
+      // ONLY approved (Paid/Success) rows count. This keeps the dashboard's
+      // headline numbers identical to the Revenue Analytics page and prevents
+      // pending_verification / rejected payments from inflating revenue.
+      // (approve_payment flips a UPI payment to 'Success' but does not touch
+      // members.amount_paid, so members.amount_paid alone would miss approved
+      // UPI revenue entirely.)
+      const { data: paymentRows, error: paymentsError } = await supabase
+        .from("payments")
+        .select("amount, status, created_at")
+        .eq("gym_owner_id", currentUserId);
+
+      if (paymentsError) {
+        console.warn("📊 [Revenue] Payments fetch error:", paymentsError);
+      }
+      const approvedPayments = (paymentRows || []).filter((p: any) => isApprovedPayment(p.status));
+
       // Plan Prices - This should ideally come from gym_plans table
       const planPrices: Record<string, number> = {
         'Monthly': 1000,
@@ -763,22 +782,16 @@ function DashboardPage() {
       // Check for expired members and update status in DB if needed
       const expiredMemberIds: string[] = [];
 
+      // Pending dues + auto-expiry are still driven by the members table
+      // (amount_paid vs plan price); revenue is computed separately below from
+      // the approved payments ledger.
       latestMembers.forEach(m => {
         const paid = Number(m.amount_paid) || 0;
-        totalRev += paid;
 
         const planName = m.membership_plan || 'Monthly';
         const price = planPrices[planName] || 0; // Use 0 if plan not found to avoid fake numbers
         const due = Math.max(0, price - paid);
         totalPending += due;
-
-        // Monthly filtering
-        const createdAt = new Date(m.created_at);
-        if (createdAt.getMonth() === currentMonth && createdAt.getFullYear() === currentYear) {
-          currentMonthRev += paid;
-        } else if (createdAt.getMonth() === lastMonth && createdAt.getFullYear() === lastMonthYear) {
-          lastMonthRev += paid;
-        }
 
         // Expiry Logic: Check if membership end date has passed today
         if (m.expiry_date && new Date(m.expiry_date) < now && m.status?.toLowerCase() === 'active') {
@@ -786,15 +799,29 @@ function DashboardPage() {
         }
       });
 
-      // Bulk update expired members if any found
+      // Revenue = approved payments only, matching the Revenue Analytics page.
+      approvedPayments.forEach((p: any) => {
+        const amount = Number(p.amount) || 0;
+        totalRev += amount;
+
+        const createdAt = new Date(p.created_at);
+        if (createdAt.getMonth() === currentMonth && createdAt.getFullYear() === currentYear) {
+          currentMonthRev += amount;
+        } else if (createdAt.getMonth() === lastMonth && createdAt.getFullYear() === lastMonthYear) {
+          lastMonthRev += amount;
+        }
+      });
+
+      // Auto-expire overdue members via a SECURITY DEFINER RPC. A client-side
+      // write can't do this: `members` is a non-updatable view, and an owner
+      // can't update another user's `profiles` row under RLS. The RPC scopes to
+      // this owner's gym and writes the base `profiles` table.
       if (expiredMemberIds.length > 0) {
         console.log(`Auto-expiry: Marking ${expiredMemberIds.length} members as Inactive`);
         supabase
-          .from("members")
-          .update({ status: "Inactive" })
-          .in("id", expiredMemberIds)
+          .rpc("expire_overdue_members")
           .then(({ error }) => {
-            if (error) console.error("Auto-expiry update failed:", error);
+            if (error) console.error("Auto-expiry RPC failed:", error);
           });
       }
 
@@ -806,8 +833,14 @@ function DashboardPage() {
       const change = lastMonthRev === 0 ? (currentMonthRev > 0 ? 100 : 0) : ((currentMonthRev - lastMonthRev) / lastMonthRev) * 100;
       setRevenueChange(change);
 
-      // Update overdue members for 'Action Needed'
-      const today = new Date().toISOString();
+      // Build the 'Action Needed' list. A member needs the owner's attention for
+      // EITHER of two reasons:
+      //   • dues    — they still owe part of the plan price (price − amount_paid)
+      //   • renewal — their plan has expired (expiry_date in the past), so even a
+      //               fully-paid member needs a renewal nudge.
+      // Both surface a "Send Reminder" action; dues are prioritised, then by how
+      // long a plan has been expired.
+      const nowMs = Date.now();
       const overdue = latestMembers
         .map(m => {
           const paid = Number(m.amount_paid) || 0;
@@ -815,7 +848,12 @@ function DashboardPage() {
           const price = planPrices[planName] || 0;
           const due = Math.max(0, price - paid);
           const memberPhone = m.mobile_number || m.phone || "";
-          
+          const expiryMs = m.expiry_date ? new Date(m.expiry_date).getTime() : NaN;
+          const isExpired = !isNaN(expiryMs) && expiryMs < nowMs;
+
+          const kind: 'dues' | 'renewal' | null =
+            due > 0 ? 'dues' : isExpired ? 'renewal' : null;
+
           return {
             name: m.full_name,
             plan: m.membership_plan,
@@ -823,13 +861,18 @@ function DashboardPage() {
             mobile_number: memberPhone,
             expiry_date: m.expiry_date,
             dueAmount: due,
-            amount: `₹${due.toLocaleString()}`
+            amount: due > 0 ? `₹${due.toLocaleString()}` : '',
+            kind,
+            expiryMs: isNaN(expiryMs) ? Infinity : expiryMs,
           };
         })
-        .filter(m => m.dueAmount > 0)
-        .sort((a, b) => b.dueAmount - a.dueAmount)
+        .filter(m => m.kind !== null)
+        // Dues first (higher amount first), then renewals by longest-expired.
+        .sort((a, b) =>
+          b.dueAmount - a.dueAmount || a.expiryMs - b.expiryMs
+        )
         .slice(0, 5);
-        
+
       setOverdueMembersData(overdue);
 
     } catch (err: any) {
@@ -1169,7 +1212,7 @@ function DashboardPage() {
     return cleaned;
   };
 
-  const handleSendReminder = async (name: string, phone?: string, amount?: string) => {
+  const handleSendReminder = async (name: string, phone?: string, amount?: string, kind: 'dues' | 'renewal' = 'dues') => {
     const cleanedPhone = cleanReminderPhone(phone);
 
     if (!cleanedPhone) {
@@ -1196,10 +1239,11 @@ function DashboardPage() {
       const response = await fetch(n8nWebhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          name, 
-          phone: cleanPhone, 
+        body: JSON.stringify({
+          name,
+          phone: cleanPhone,
           amount: amount || "pending amount",
+          reason: kind, // 'dues' | 'renewal' — lets the automation pick a template
           timestamp: new Date().toISOString()
         })
       });
@@ -1212,8 +1256,10 @@ function DashboardPage() {
     } catch (error) {
       console.warn("Reminder: Falling back to manual WhatsApp", error);
       
-      // Fallback to manual WhatsApp link
-      const message = `Hello ${name}, your gym fee of ${amount || "pending amount"} is pending. Please clear it soon to avoid any interruption to your access!`;
+      // Fallback to manual WhatsApp link — message tailored to the reason.
+      const message = kind === 'renewal'
+        ? `Hello ${name}, your gym membership has expired. Please renew it soon to continue enjoying uninterrupted access. See you at the gym! 💪`
+        : `Hello ${name}, your gym fee of ${amount || "pending amount"} is pending. Please clear it soon to avoid any interruption to your access!`;
       const whatsappUrl = `https://wa.me/${whatsappPhone}?text=${encodeURIComponent(message)}`;
       
       // Open in new tab
@@ -1458,7 +1504,9 @@ function DashboardPage() {
           fetchRecentActivities();
         })
         .on("postgres_changes", { event: "*", schema: "public", table: "members", filter: `gym_owner_id=eq.${currentUserId}` }, fetchMembersCounts)
-        .on("postgres_changes", { event: "*", schema: "public", table: "profiles", filter: `gym_owner_id=eq.${currentUserId}` }, fetchMembersCounts);
+        .on("postgres_changes", { event: "*", schema: "public", table: "profiles", filter: `gym_owner_id=eq.${currentUserId}` }, fetchMembersCounts)
+        // Keep revenue live when a payment is logged, approved, or rejected.
+        .on("postgres_changes", { event: "*", schema: "public", table: "payments", filter: `gym_owner_id=eq.${currentUserId}` }, fetchMembersCounts);
 
       // Only listen to THIS gym's check-ins. Attached once the gym id is known
       // so we never subscribe to cross-gym attendance inserts.
@@ -1626,6 +1674,13 @@ function DashboardPage() {
               alertsEnabled={gymSettings?.notify_pending_payment !== false}
             />
 
+            {/* Pending store purchases paid via UPI — approve to finalize, reject
+                to restore the reserved stock. Self-hides when nothing's pending. */}
+            <OwnerPendingStorePurchases
+              ownerId={currentUserId}
+              alertsEnabled={gymSettings?.notify_pending_payment !== false}
+            />
+
             {/* Action Needed & Activity Log */}
             <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className="lg:col-span-2 space-y-6">
@@ -1648,7 +1703,11 @@ function DashboardPage() {
                             <div>
                               <div className="font-bold text-lg">{member.name}</div>
                               <div className="text-sm text-muted-foreground">
-                                {member.plan} • <span className="text-red-400 font-medium">{member.amount} Overdue</span>
+                                {member.plan} • {member.kind === 'renewal' ? (
+                                  <span className="text-amber-400 font-medium">Plan expired — renewal due</span>
+                                ) : (
+                                  <span className="text-red-400 font-medium">{member.amount} Overdue</span>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -1663,7 +1722,7 @@ function DashboardPage() {
 
                               return (
                             <Button 
-                              onClick={() => handleSendReminder(member.name, reminderPhone, member.amount)}
+                              onClick={() => handleSendReminder(member.name, reminderPhone, member.amount, member.kind)}
                               className={`rounded-xl bg-primary text-white font-bold px-6 h-11 shadow-lg shadow-primary/20 hover:shadow-primary/40 transition-all ${sendingReminderId === reminderKey ? 'opacity-50 cursor-not-allowed' : ''}`}
                               disabled={sendingReminderId === reminderKey}
                             >
@@ -1685,7 +1744,7 @@ function DashboardPage() {
                       <div className="p-12 text-center space-y-3">
                         <div className="text-4xl">🎉</div>
                         <p className="text-xl font-bold text-white">All caught up!</p>
-                        <p className="text-muted-foreground">No pending dues at the moment.</p>
+                        <p className="text-muted-foreground">No pending dues or renewals at the moment.</p>
                       </div>
                     )}
                   </div>
