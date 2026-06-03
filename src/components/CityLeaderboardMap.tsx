@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import "@/lib/leafletDefaultIcon";
 import { ArrowRight, Dumbbell, Flame, Trophy } from "lucide-react";
 import type { GymLeaderboardEntry } from "@/hooks/useCityGymLeaderboard";
 
@@ -12,35 +13,7 @@ import type { GymLeaderboardEntry } from "@/hooks/useCityGymLeaderboard";
  */
 
 const markerStyles = `
-  /* --- Premium silver/grayscale basemap. Positron is already a clean light
-     theme; a whisper of grayscale + contrast gives it the muted, sleek look. */
-  .gp-map .leaflet-tile { filter: grayscale(0.28) contrast(0.96) brightness(1.03); }
-  .gp-map .leaflet-container { background: #eef1f5; }
-
-  /* --- Custom live marker: a sleek red dot with a radial ripple that makes the
-     map feel alive. The pulse lives ONLY here, never on leaderboard avatars. */
-  @keyframes gpRipple {
-    0%   { transform: translate(-50%, -50%) scale(0.32); opacity: 0.55; }
-    70%  { opacity: 0.12; }
-    100% { transform: translate(-50%, -50%) scale(1.5);  opacity: 0; }
-  }
-  .gp-marker { position: relative; display: flex; align-items: center; justify-content: center; }
-  .gp-ripple {
-    position: absolute; left: 50%; top: 50%; width: 58px; height: 58px; border-radius: 9999px;
-    background: radial-gradient(circle, rgba(244, 63, 94, 0.42) 0%, rgba(244, 63, 94, 0.14) 45%, rgba(244, 63, 94, 0) 70%);
-    animation: gpRipple 2.1s ease-out infinite; pointer-events: none;
-  }
-  .gp-ripple-2 { animation-delay: 0.7s; }
-  .gp-ripple-3 { animation-delay: 1.4s; }
-  .gp-dot {
-    position: relative; z-index: 5; display: flex; align-items: center; justify-content: center;
-    color: #fff; font-weight: 800; line-height: 1; border: 2.5px solid #fff; border-radius: 9999px;
-    background: linear-gradient(135deg, #fb7185, #e11d48);
-    box-shadow: 0 4px 12px rgba(225, 29, 72, 0.5);
-  }
-  .gp-dot-lead { background: linear-gradient(135deg, #fb7185, #be123c); box-shadow: 0 5px 18px rgba(190, 18, 60, 0.6); }
-
-  /* --- Fullscreen toggle, styled to match the premium UI. */
+  /* --- Fullscreen toggle button. */
   .gp-fs-btn {
     display: flex; align-items: center; justify-content: center; width: 34px; height: 34px;
     cursor: pointer; border: none; border-radius: 10px; background: #fff; color: #334155;
@@ -114,32 +87,6 @@ const FullscreenControl = () => {
   return null;
 };
 
-const buildIcon = (entry: GymLeaderboardEntry) => {
-  const isLeader = entry.rank === 1;
-  const size = isLeader ? 30 : 24;
-  const label = isLeader ? "★" : `${entry.rank}`;
-
-  // The ripple only renders while the gym is ACTIVE now — that's what makes a
-  // live gym stand out. The dot itself is always the sleek red pointer.
-  const ripple = entry.is_active
-    ? `<span class="gp-ripple"></span><span class="gp-ripple gp-ripple-2"></span><span class="gp-ripple gp-ripple-3"></span>`
-    : "";
-
-  return L.divIcon({
-    className: "gp-custom-icon",
-    html: `
-      <div class="gp-marker" style="width:${size}px;height:${size}px;">
-        ${ripple}
-        <div class="gp-dot ${isLeader ? "gp-dot-lead" : ""}" style="width:${size}px;height:${size}px;font-size:${isLeader ? 14 : 11}px;">
-          ${label}
-        </div>
-      </div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-    popupAnchor: [0, -size / 2],
-  });
-};
-
 const CityLeaderboardMap = ({ entries }: { entries: GymLeaderboardEntry[] }) => {
   const located = entries.filter((g) => g.latitude != null && g.longitude != null);
   const center: [number, number] = located.length
@@ -147,20 +94,18 @@ const CityLeaderboardMap = ({ entries }: { entries: GymLeaderboardEntry[] }) => 
     : ALIGARH_CENTER;
 
   return (
-    <div className="gp-map relative w-full overflow-hidden rounded-3xl border border-slate-200 shadow-inner">
+    <div className="relative w-full overflow-hidden rounded-3xl border border-slate-200 shadow-inner">
       <style>{markerStyles}</style>
       <MapContainer center={center} zoom={13} scrollWheelZoom className="z-0 h-115 w-full">
         <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          maxZoom={20}
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         />
         <FullscreenControl />
         {located.map((gym) => (
           <Marker
             key={`${gym.gym_id}-${gym.is_active ? "live" : "idle"}-${gym.rank}`}
             position={[gym.latitude as number, gym.longitude as number]}
-            icon={buildIcon(gym)}
           >
             <Popup className="gp-popup">
               <div className="w-72 font-sans">

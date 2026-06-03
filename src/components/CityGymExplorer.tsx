@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { supabase } from "@/supabase";
 import { MapContainer, TileLayer, Marker, useMap, useMapEvents, Circle } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
+import '@/lib/leafletDefaultIcon';
 import L from 'leaflet';
 import { cn } from "@/lib/utils";
 
@@ -93,43 +94,10 @@ const openState = (gym: GymData): { label: string; open: boolean } | null => {
 };
 
 // Google-Maps style: hide markers at world/country zoom, reveal them as you zoom
-// into a city, and only show name labels once zoomed in close.
+// into a city. Markers use the default Leaflet blue pin.
 const MARKER_ZOOM = 10;
-const LABEL_ZOOM = 14;
 
-const createCustomMarkerIcon = (gym: GymData, isEnrolled: boolean, showLabel: boolean) => {
-  // App theme gradient (purple -> indigo); the enrolled gym gets a deeper indigo.
-  const [c1, c2] = isEnrolled ? ['#6366f1', '#4338ca'] : ['#a855f7', '#6d28d9'];
-  const labelColor = isEnrolled ? '#4338ca' : '#6d28d9';
-  const safeName = (gym.gym_name || 'Gym').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const gid = `grad-${gym.id}`;
-
-  // Compact Google-Maps-style teardrop pin with a gradient fill (tip at the bottom).
-  const pin = `
-    <svg width="22" height="29" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg" style="filter:drop-shadow(0 2px 3px rgba(76,29,149,0.4));">
-      <defs>
-        <linearGradient id="${gid}" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="${c1}"/>
-          <stop offset="100%" stop-color="${c2}"/>
-        </linearGradient>
-      </defs>
-      <path d="M12 0C5.373 0 0 5.373 0 12c0 8.5 12 20 12 20s12-11.5 12-20C24 5.373 18.627 0 12 0z" fill="url(#${gid})" stroke="#ffffff" stroke-width="1.5"/>
-      <circle cx="12" cy="11.5" r="4" fill="#ffffff"/>
-    </svg>`;
-
-  const label = showLabel
-    ? `<div style="margin-top:1px;max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px;line-height:1.1;font-weight:700;color:${labelColor};background:rgba(255,255,255,0.92);padding:1px 6px;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,0.18);">${safeName}</div>`
-    : '';
-
-  return L.divIcon({
-    html: `<div style="display:flex;flex-direction:column;align-items:center;">${pin}${label}</div>`,
-    className: 'bg-transparent border-0',
-    iconSize: showLabel ? [130, 46] : [22, 29],
-    iconAnchor: showLabel ? [65, 29] : [11, 29],
-  });
-};
-
-// Tracks the map zoom so the parent can toggle marker labels (and syncs on mount).
+// Tracks the map zoom so the parent can hide markers when zoomed out (and syncs on mount).
 const ZoomWatcher = ({ onZoom }: { onZoom: (z: number) => void }) => {
   const map = useMapEvents({ zoomend: () => onZoom(map.getZoom()) });
   useEffect(() => { onZoom(map.getZoom()); }, [map, onZoom]);
@@ -512,7 +480,6 @@ export function CityGymExplorer({ onJoinGym, currentGymId, currentGym, currentUs
                 <Marker
                   key={gym.id}
                   position={[gym.latitude, gym.longitude]}
-                  icon={createCustomMarkerIcon(gym, currentGymId === gym.id, zoom >= LABEL_ZOOM)}
                   eventHandlers={{ click: () => showGymDetails(gym) }}
                 />
               );

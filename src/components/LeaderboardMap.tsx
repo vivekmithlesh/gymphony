@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { MapContainer, TileLayer, Marker, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
+import '@/lib/leafletDefaultIcon';
 import L from 'leaflet';
 import { createClient } from '@supabase/supabase-js';
 import { Phone, Star, MapPinned, Navigation2, Globe } from "lucide-react";
@@ -45,45 +46,6 @@ interface Review {
 
 interface LeaderboardMapProps {
   currentUserId?: string;
-}
-
-// ─── Pulsing Marker SVG Factory ──────────────────────────────────────────────
-function createPulsingIcon(vibePoints: number, rank: number) {
-  const maxVibe = 2000;
-  const intensity = Math.min((vibePoints || 0) / maxVibe, 1);
-  // pulse speed: more vibe = faster pulse
-  const duration = 3 - intensity * 1.5; // 1.5s to 3s
-  // ring count: top gyms get 3 rings
-  const rings = rank === 1 ? 3 : rank <= 3 ? 2 : 1;
-  const color = rank === 1 ? '#FF3B30' : rank <= 3 ? '#FF6B35' : '#FF453A';
-
-  const ringsSVG = Array.from({ length: rings }, (_, i) => {
-    const delay = i * (duration / rings);
-    const maxR = 28 + i * 12;
-    return `
-      <circle cx="20" cy="20" r="10" fill="none" stroke="${color}" stroke-width="${1.5 - i * 0.4}" opacity="0">
-        <animate attributeName="r" values="10;${maxR}" dur="${duration}s" begin="${delay}s" repeatCount="indefinite"/>
-        <animate attributeName="opacity" values="0.8;0" dur="${duration}s" begin="${delay}s" repeatCount="indefinite"/>
-      </circle>`;
-  }).join('');
-
-  const html = `
-    <div style="position:relative;width:40px;height:40px">
-      <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"
-           style="position:absolute;top:0;left:0;overflow:visible">
-        ${ringsSVG}
-        <circle cx="20" cy="20" r="10" fill="${color}" stroke="white" stroke-width="2.5"/>
-        <text x="20" y="24" text-anchor="middle" fill="white" font-size="10" font-weight="700" font-family="system-ui">${rank}</text>
-      </svg>
-    </div>`;
-
-  return L.divIcon({
-    html,
-    className: '',
-    iconSize: [40, 40],
-    iconAnchor: [20, 20],
-    popupAnchor: [0, -20],
-  });
 }
 
 // ─── Map click to close card ─────────────────────────────────────────────────
@@ -401,7 +363,6 @@ export default function LeaderboardMap({ currentUserId }: LeaderboardMapProps) {
   const [reviews, setReviews] = useState<Review[]>([]);
   const [cardPos, setCardPos] = useState({ x: 100, y: 100 });
   const [flyTo, setFlyTo] = useState<[number, number] | null>(null);
-  const markersRef = useRef<Map<string, L.DivIcon>>(new Map());
 
   // ── Fetch all gyms with vibe points ──
   const fetchGyms = useCallback(async () => {
@@ -539,21 +500,15 @@ export default function LeaderboardMap({ currentUserId }: LeaderboardMapProps) {
         <MapClickHandler onClose={() => setSelectedGym(null)} />
         <FlyTo coords={flyTo} />
 
-        {validGyms.map((gym, idx) => {
-          const rank = idx + 1;
-          const icon = createPulsingIcon(gym.vibe_points ?? 0, rank);
-          markersRef.current.set(gym.id, icon);
-          return (
-            <Marker
-              key={gym.id}
-              position={[gym.latitude!, gym.longitude!]}
-              icon={icon}
-              eventHandlers={{
-                click: (e) => handleMarkerClick(gym, e),
-              }}
-            />
-          );
-        })}
+        {validGyms.map((gym) => (
+          <Marker
+            key={gym.id}
+            position={[gym.latitude!, gym.longitude!]}
+            eventHandlers={{
+              click: (e) => handleMarkerClick(gym, e),
+            }}
+          />
+        ))}
       </MapContainer>
 
       {/* Google-style card */}

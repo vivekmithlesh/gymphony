@@ -47,6 +47,7 @@ import { initiatePhonePePayment, finalizeUpgrade } from "@/lib/phonepe";
 import { hasAccess } from "@/lib/permissions";
 import { WallQRTab } from "@/components/WallQRTab";
 import { TimePicker } from "@/components/TimePicker";
+import "@/lib/leafletDefaultIcon";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -1235,9 +1236,6 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                                 useMap: () => { setView: (c: [number, number], z: number, o: Record<string, unknown>) => void };
                                 useMapEvents: (handlers: Record<string, unknown>) => null;
                               };
-                              const L = lf.L as {
-                                divIcon: (opts: Record<string, unknown>) => unknown;
-                              };
 
                               function MapController() {
                                 const map = useMap();
@@ -1258,20 +1256,6 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                                 return null;
                               }
 
-                              const pinIcon = L.divIcon({
-                                className: "custom-div-icon",
-                                html: `<div style="
-                                  width:28px;height:40px;position:relative;
-                                "><div style="
-                                  width:28px;height:28px;border-radius:50% 50% 50% 0;
-                                  background:#8B5CF6;transform:rotate(-45deg);
-                                  box-shadow:0 2px 8px rgba(139,92,246,0.5);
-                                "></div></div>`,
-                                iconSize: [28, 40],
-                                iconAnchor: [14, 40],
-                                popupAnchor: [0, -42],
-                              });
-
                               return (
                                 <>
                                   <MapController />
@@ -1279,7 +1263,6 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                                   {locationDraft.latitude !== null && locationDraft.longitude !== null && (
                                     <Marker
                                       position={[locationDraft.latitude, locationDraft.longitude]}
-                                      icon={pinIcon}
                                       draggable
                                       eventHandlers={{
                                         dragend: (e: { target: { getLatLng: () => { lat: number; lng: number } } }) => {
