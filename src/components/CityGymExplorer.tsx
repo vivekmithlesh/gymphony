@@ -11,11 +11,11 @@ import { supabase } from "@/supabase";
 import { MapContainer, TileLayer, Marker, useMap, useMapEvents, Circle } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
-import { applyDefaultMarkerIcons } from "@/lib/leafletDefaultIcon";
+import { createDefaultMarkerIcon } from "@/lib/leafletDefaultIcon";
 import { cn } from "@/lib/utils";
 
-// Restore the stock blue pin on this module's Leaflet instance.
-applyDefaultMarkerIcons(L);
+// Explicit stock blue pin, passed to every <Marker> so the icon always resolves.
+const defaultIcon = createDefaultMarkerIcon(L) as L.Icon;
 
 // Haversine formula to calculate distance between two lat/lon points in km
 const haversineDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
@@ -483,6 +483,7 @@ export function CityGymExplorer({ onJoinGym, currentGymId, currentGym, currentUs
                 <Marker
                   key={gym.id}
                   position={[gym.latitude, gym.longitude]}
+                  icon={defaultIcon}
                   eventHandlers={{ click: () => showGymDetails(gym) }}
                 />
               );

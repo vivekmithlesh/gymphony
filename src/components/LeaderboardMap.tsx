@@ -4,10 +4,10 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { MapContainer, TileLayer, Marker, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
-import { applyDefaultMarkerIcons } from "@/lib/leafletDefaultIcon";
+import { createDefaultMarkerIcon } from "@/lib/leafletDefaultIcon";
 
-// Restore the stock blue pin on this module's Leaflet instance.
-applyDefaultMarkerIcons(L);
+// Explicit stock blue pin, passed to every <Marker> so the icon always resolves.
+const defaultIcon = createDefaultMarkerIcon(L) as L.Icon;
 import { createClient } from '@supabase/supabase-js';
 import { Phone, Star, MapPinned, Navigation2, Globe } from "lucide-react";
 
@@ -507,6 +507,7 @@ export default function LeaderboardMap({ currentUserId }: LeaderboardMapProps) {
           <Marker
             key={gym.id}
             position={[gym.latitude!, gym.longitude!]}
+            icon={defaultIcon}
             eventHandlers={{
               click: (e) => handleMarkerClick(gym, e),
             }}

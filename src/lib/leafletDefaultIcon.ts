@@ -1,32 +1,47 @@
 // =============================================================================
-// Leaflet default-marker icon fix.
+// Leaflet marker icon — explicit, bundler- and SSR-proof.
 // -----------------------------------------------------------------------------
-// Leaflet's default `L.Icon.Default` loads its marker images by relative URL,
-// which the bundler can't resolve — so default <Marker> pins render as a broken
-// image. Bundling the images via `import ... .png?url` ALSO fails in this
-// TanStack Start / Vite setup (deep node_modules asset URLs 404 in dev/SSR).
+// Default <Marker> pins render broken/blank because Leaflet's L.Icon.Default
+// resolves its images by relative URL, which the bundler rewrites to a path the
+// TanStack Start / Vite dev server doesn't serve (404 → broken-image box). The
+// `?url` import trick 404s the same way here.
 //
-// So we point the default icon at the CDN-hosted Leaflet images (same version as
-// package.json, 1.9.4). The map tiles already load from a CDN, so this needs no
-// extra network permissions, and it's bundler- and SSR-independent.
+// Rather than patch the implicit default (timing- and HMR-sensitive), we build
+// an EXPLICIT L.Icon pointed at the CDN-hosted Leaflet 1.9.4 images and pass it
+// straight to every <Marker icon={...}>. An explicit icon with a 200 URL always
+// renders. (Tiles already load from a CDN, so no new network permission.)
 //
-// IMPORTANT: this module must NOT `import "leaflet"` at the top level — a
-// top-level leaflet import crashes SSR ("window is not defined") on every route
-// (see the leaflet-ssr-safety note). Each map instead calls
-// applyDefaultMarkerIcons(L) on the SAME Leaflet instance it draws with, which
-// also avoids the static-vs-dynamic double-instance trap.
+// This module deliberately does NOT `import "leaflet"` — that would crash SSR
+// ("window is not defined") on every route (see leaflet-ssr-safety). It only
+// receives a Leaflet instance and returns an icon, so it's safe to import
+// anywhere; each map passes its own L.
 // =============================================================================
 const LEAFLET_CDN = "https://unpkg.com/leaflet@1.9.4/dist/images";
 
-type LeafletLike = {
-  Icon: { Default: { mergeOptions: (options: Record<string, unknown>) => void } };
+// Just the icon-option shape we use — kept compatible with Leaflet's IconOptions
+// (which requires iconUrl) so the real `L` is assignable here without `any`.
+type IconImageOptions = {
+  iconUrl: string;
+  iconRetinaUrl?: string;
+  shadowUrl?: string;
+  iconSize?: [number, number];
+  iconAnchor?: [number, number];
+  popupAnchor?: [number, number];
+  tooltipAnchor?: [number, number];
+  shadowSize?: [number, number];
 };
+type LeafletLike = { icon: (options: IconImageOptions) => unknown };
 
-/** Point a Leaflet instance's default marker icon at the CDN-hosted images. */
-export function applyDefaultMarkerIcons(L: LeafletLike): void {
-  L.Icon.Default.mergeOptions({
-    iconRetinaUrl: `${LEAFLET_CDN}/marker-icon-2x.png`,
+/** Build the standard blue Leaflet pin (CDN images) for a given Leaflet instance. */
+export function createDefaultMarkerIcon(L: LeafletLike): unknown {
+  return L.icon({
     iconUrl: `${LEAFLET_CDN}/marker-icon.png`,
+    iconRetinaUrl: `${LEAFLET_CDN}/marker-icon-2x.png`,
     shadowUrl: `${LEAFLET_CDN}/marker-shadow.png`,
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+    tooltipAnchor: [16, -28],
+    shadowSize: [41, 41],
   });
 }

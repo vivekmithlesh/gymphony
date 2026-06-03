@@ -2,13 +2,14 @@ import { useEffect } from "react";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { applyDefaultMarkerIcons } from "@/lib/leafletDefaultIcon";
+import { createDefaultMarkerIcon } from "@/lib/leafletDefaultIcon";
 import { ArrowRight, Dumbbell, Flame, Trophy } from "lucide-react";
 import type { GymLeaderboardEntry } from "@/hooks/useCityGymLeaderboard";
 
-// Restore the stock blue pin on this module's Leaflet instance (client-only —
-// this whole component is React.lazy'd, so it never evaluates during SSR).
-applyDefaultMarkerIcons(L);
+// Explicit stock blue pin (client-only — this module is React.lazy'd, so it
+// never evaluates during SSR). Passed to every <Marker> so the icon can't fail
+// to resolve.
+const defaultIcon = createDefaultMarkerIcon(L) as L.Icon;
 
 /**
  * Leaflet map for the city gym leaderboard. Lives in its own module so the
@@ -110,6 +111,7 @@ const CityLeaderboardMap = ({ entries }: { entries: GymLeaderboardEntry[] }) => 
           <Marker
             key={`${gym.gym_id}-${gym.is_active ? "live" : "idle"}-${gym.rank}`}
             position={[gym.latitude as number, gym.longitude as number]}
+            icon={defaultIcon}
           >
             <Popup className="gp-popup">
               <div className="w-72 font-sans">

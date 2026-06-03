@@ -210,9 +210,12 @@ function LeafletMap({ center, zoom, className, children }: LeafletMapProps) {
       import("@/lib/leafletDefaultIcon"),
     ]).then(([L, RL, icon]) => {
       const leafletInstance = L.default ?? L;
-      // Restore the stock blue pin on the SAME instance the map will use.
-      icon.applyDefaultMarkerIcons(leafletInstance);
-      setLeaflet({ L: leafletInstance, ...RL });
+      setLeaflet({
+        L: leafletInstance,
+        // Explicit stock blue pin, built on the SAME instance the map draws with.
+        markerIcon: icon.createDefaultMarkerIcon(leafletInstance),
+        ...RL,
+      });
     });
   }, []);
 
@@ -1246,6 +1249,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                                 useMap: () => { setView: (c: [number, number], z: number, o: Record<string, unknown>) => void };
                                 useMapEvents: (handlers: Record<string, unknown>) => null;
                               };
+                              const markerIcon = (lf as { markerIcon?: unknown }).markerIcon;
 
                               function MapController() {
                                 const map = useMap();
@@ -1273,6 +1277,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                                   {locationDraft.latitude !== null && locationDraft.longitude !== null && (
                                     <Marker
                                       position={[locationDraft.latitude, locationDraft.longitude]}
+                                      icon={markerIcon}
                                       draggable
                                       eventHandlers={{
                                         dragend: (e: { target: { getLatLng: () => { lat: number; lng: number } } }) => {
