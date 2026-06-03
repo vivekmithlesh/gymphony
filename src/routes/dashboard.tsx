@@ -58,10 +58,10 @@ import { initiatePhonePePayment, finalizeUpgrade as finalizePhonePeUpgrade } fro
 import { hasAccess, FeatureName, LIMITS } from "@/lib/permissions";
 import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
 import { MembersList } from "@/components/MembersList";
-import { KioskMode } from "@/components/KioskMode";
-import { GymWallQRCode } from "@/components/GymWallQRCode";
+
 import { FeatureLock } from "@/components/FeatureLock";
 import RetentionWidget from "@/components/RetentionWidget";
+import { OwnerPendingPayments } from "@/components/OwnerPendingPayments";
 import WhatsAppBotWidget from "@/components/WhatsAppBotWidget";
 import AttendanceHeatmap from "@/components/AttendanceHeatmap";
 import { InventoryManager } from "@/components/InventoryManager";
@@ -114,7 +114,7 @@ const navItems = [
   { name: "🏆 Leaderboard", icon: Trophy, feature: null, to: "/city-leaderboard" },
   { name: "Inventory", icon: Package, feature: 'advanced_analytics' }, // Grouped under analytics for now
   { name: "Plans", icon: CreditCard, feature: null },
-  { name: "Kiosk Mode", icon: Monitor, feature: null },
+  { name: "Kiosk Mode", icon: Monitor, feature: null, to: "/kiosk" },
   { name: "Settings", icon: Settings, feature: null },
 ];
 
@@ -1436,7 +1436,8 @@ function DashboardPage() {
 
       fetchMembersCounts();
       fetchRecentActivities();
-      fetchLowStock();
+      // Respect the owner's "Low Stock / Inventory Alerts" preference.
+      if (gymSettings?.notify_low_stock !== false) fetchLowStock();
       fetchAvailablePlans();
       fetchNotifications();
       fetchLiveMemberCount();
@@ -1617,6 +1618,14 @@ function DashboardPage() {
               ))}
             </section>
 
+            {/* Pending UPI payments approval — ALWAYS available (self-hides only when
+                there's nothing to approve). The "Alert on Pending UPI Payments"
+                preference only controls the toast when a new one arrives, not this UI. */}
+            <OwnerPendingPayments
+              ownerId={currentUserId}
+              alertsEnabled={gymSettings?.notify_pending_payment !== false}
+            />
+
             {/* Action Needed & Activity Log */}
             <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className="lg:col-span-2 space-y-6">
@@ -1756,21 +1765,6 @@ function DashboardPage() {
         );
       case "Plans":
         return <SettingsView initialCategory="Billing & Plans" />;
-      case "Kiosk Mode":
-        return (
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-            <div className="lg:col-span-2">
-              <KioskMode />
-            </div>
-            <div className="lg:col-span-1">
-              <GymWallQRCode
-                gymId={gymSettings?.id}
-                gymName={gymSettings?.gym_name}
-                hasLocation={gymSettings?.latitude != null && gymSettings?.longitude != null}
-              />
-            </div>
-          </div>
-        );
       case "Settings":
         return <SettingsView initialCategory={searchSection || "Gym Profile"} />;
       default:
@@ -1782,6 +1776,19 @@ function DashboardPage() {
         );
     }
   };
+
+  // Respect the owner's notification preferences in the activity feed: hide
+  // new-member entries when "Alert on New Member Signup" is off, and inventory
+  // entries when "Low Stock / Inventory Alerts" is off.
+  const visibleNotifications = notifications.filter((n) => {
+    const t = String(n.type || "").toLowerCase();
+    if (gymSettings?.notify_new_member === false && (t === "member_joined" || t === "member")) return false;
+    if (gymSettings?.notify_low_stock === false && (t.includes("stock") || t.includes("inventory"))) return false;
+    return true;
+  });
+  // Badge counts only the notifications actually shown, so it never disagrees
+  // with the (filtered) feed.
+  const visibleUnreadCount = visibleNotifications.filter((n) => !n.isRead).length;
 
   return (
     <DashboardErrorBoundary>
@@ -1957,7 +1964,7 @@ function DashboardPage() {
                 key={item.name}
                 onClick={() => {
                   if (item.to) {
-                    navigate({ to: item.to as "/city-leaderboard" });
+                    navigate({ to: item.to as "/city-leaderboard" | "/kiosk" });
                     return;
                   }
 
@@ -2024,7 +2031,7 @@ function DashboardPage() {
                       key={item.name}
                       onClick={() => {
                         if (item.to) {
-                          navigate({ to: item.to as "/city-leaderboard" });
+                          navigate({ to: item.to as "/city-leaderboard" | "/kiosk" });
                           setIsMobileMenuOpen(false);
                           return;
                         }
@@ -2084,9 +2091,9 @@ function DashboardPage() {
                 onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
               >
                 <Bell className="h-5 w-5 transition-transform group-hover:rotate-12" />
-                {unreadCount > 0 && (
+                {visibleUnreadCount > 0 && (
                   <span className="absolute -top-1 -right-1 h-5 w-5 bg-gradient-brand border-2 border-white rounded-full flex items-center justify-center text-[10px] font-bold text-white shadow-lg">
-                    {unreadCount}
+                    {visibleUnreadCount}
                   </span>
                 )}
               </Button>
@@ -2112,8 +2119,8 @@ function DashboardPage() {
                         </button>
                       </div>
                       <div className="max-h-100 overflow-y-auto custom-scrollbar">
-                        {notifications.length > 0 ? (
-                          notifications.map((n) => (
+                        {visibleNotifications.length > 0 ? (
+                          visibleNotifications.map((n) => (
                             <div key={n.id} className={`p-5 border-b border-slate-50 hover:bg-primary/5 transition-colors ${!n.isRead ? 'bg-primary/2' : ''}`}>
                               <div className="flex justify-between items-start mb-1.5">
                                 <span className="text-[10px] font-black text-primary uppercase tracking-widest">{n.title}</span>

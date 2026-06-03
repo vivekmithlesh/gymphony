@@ -27,6 +27,7 @@ import {
   Search,
   Navigation2,
   Crosshair,
+  QrCode,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,10 +45,18 @@ import { toast } from "sonner";
 import { supabase } from "@/supabase";
 import { initiatePhonePePayment, finalizeUpgrade } from "@/lib/phonepe";
 import { hasAccess } from "@/lib/permissions";
+import { WallQRTab } from "@/components/WallQRTab";
+import { TimePicker } from "@/components/TimePicker";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const MEDIA_BUCKET = "gym-photos";
+// TODO: replace YOUR_SUPPORT_NUMBER with Gymphony's official support WhatsApp
+// number (digits only, incl. country code, e.g. 919876543210).
+const SUPPORT_WHATSAPP_NUMBER = "YOUR_SUPPORT_NUMBER";
+const SUPPORT_WHATSAPP_URL = `https://wa.me/${SUPPORT_WHATSAPP_NUMBER}?text=${encodeURIComponent(
+  "Hi Gymphony Support, I need help with my gym dashboard",
+)}`;
 const ALIGARH_CENTER: [number, number] = [27.8974, 78.088];
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024; // 25 MB
 const VIDEO_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
@@ -68,6 +77,7 @@ type GymSettings = {
   address: string;
   owner_email: string;
   contact_number: string;
+  upi_id: string | null;
   logo_url: string | null;
   gym_photos: string[];
   gym_videos: string[];
@@ -78,9 +88,15 @@ type GymSettings = {
   description: string;
   whatsapp_reminders: boolean;
   daily_summary_email: boolean;
+  notify_new_member: boolean;
+  notify_pending_payment: boolean;
+  notify_low_stock: boolean;
   plan_type: "Free" | "Pro";
   plan_status: "Active" | "Inactive" | "Expired";
   expiry_date: string | null;
+  terms_url: string | null;
+  privacy_url: string | null;
+  refund_url: string | null;
 };
 
 type Plan = {
@@ -101,6 +117,19 @@ const toFiniteNumber = (value: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+// Light URL check for the legal links: empty is allowed (optional); otherwise it
+// must parse as a URL with a dotted hostname. A missing scheme is treated as https.
+const isValidUrl = (value: string): boolean => {
+  const s = value.trim();
+  if (!s) return true;
+  try {
+    const u = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`);
+    return !!u.hostname && u.hostname.includes(".");
+  } catch {
+    return false;
+  }
+};
+
 const buildDefaultSettings = (userId: string, email: string): Omit<GymSettings, "id"> => ({
   gym_owner_id: userId,
   gym_name: "Royal Fitness Gym",
@@ -109,6 +138,7 @@ const buildDefaultSettings = (userId: string, email: string): Omit<GymSettings, 
   address: "123 Fitness Street, Near Central Park",
   owner_email: email,
   contact_number: "+91 7906240659",
+  upi_id: null,
   logo_url: null,
   gym_photos: [],
   gym_videos: [],
@@ -119,9 +149,15 @@ const buildDefaultSettings = (userId: string, email: string): Omit<GymSettings, 
   description: "",
   whatsapp_reminders: true,
   daily_summary_email: false,
+  notify_new_member: true,
+  notify_pending_payment: true,
+  notify_low_stock: true,
   plan_type: "Free",
   plan_status: "Active",
   expiry_date: null,
+  terms_url: null,
+  privacy_url: null,
+  refund_url: null,
 });
 
 async function compressImage(file: File, maxWidth = 1920, quality = 0.8): Promise<File> {
@@ -216,6 +252,9 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
   );
   const [isLoadingSettings, setIsLoadingSettings] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  // Tracks which legal link inputs currently hold an invalid URL (validated on blur).
+  const [legalErrors, setLegalErrors] = useState<Record<string, boolean>>({});
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
 
   // ── Location state ──────────────────────────────────────────────────────────
   const [locationDraft, setLocationDraft] = useState<LocationDraft>({ latitude: null, longitude: null });
@@ -237,6 +276,8 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
   const [isAddingPlan, setIsAddingPlan] = useState(false);
   const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
   const [planForm, setPlanForm] = useState({ name: "", price: "", duration: "" });
+  const [isSavingPlan, setIsSavingPlan] = useState(false);
+  const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null);
 
   // ── Billing state ───────────────────────────────────────────────────────────
   const [isProcessingBilling, setIsProcessingBilling] = useState(false);
@@ -620,15 +661,39 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
     }
   }, [gymId]);
 
-  const handleAddPlan = useCallback(async () => {
+  // Shared validation for the plan form.
+  const validatePlanForm = () => {
     const { name, price, duration } = planForm;
-    if (!name || !price || !duration) { toast.error("Fill all plan fields."); return; }
+    if (!name.trim() || price === "" || duration === "") {
+      toast.error("Fill in the plan name, price and duration.");
+      return null;
+    }
+    const priceNum = Number(price);
+    const durationNum = Number(duration);
+    if (!Number.isFinite(priceNum) || priceNum < 0) {
+      toast.error("Enter a valid, non-negative price.");
+      return null;
+    }
+    if (!Number.isInteger(durationNum) || durationNum < 1) {
+      toast.error("Duration must be a whole number of months (1 or more).");
+      return null;
+    }
+    return { name: name.trim(), priceNum, durationNum };
+  };
+
+  const handleAddPlan = useCallback(async () => {
+    const valid = validatePlanForm();
+    if (!valid) return;
+    if (!gymId) { toast.error("Gym profile still loading — try again in a moment."); return; }
+
+    setIsSavingPlan(true);
     try {
       const { error } = await supabase.from("gym_plans").insert([{
-        name,
-        price: Number(price),
-        duration: Number(duration),
-        duration_days: Number(duration) * 30,
+        name: valid.name,
+        plan_name: valid.name,
+        price: valid.priceNum,
+        duration: valid.durationNum,
+        duration_days: valid.durationNum * 30,
         gym_id: gymId,
       }]);
       if (error) throw error;
@@ -638,21 +703,27 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
       await fetchPlans();
     } catch (err: unknown) {
       toast.error("Add plan failed: " + (err as Error).message);
+    } finally {
+      setIsSavingPlan(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planForm, gymId, fetchPlans]);
 
   const handleUpdatePlan = useCallback(async () => {
     if (!editingPlan) return;
-    const { name, price, duration } = planForm;
-    if (!name || !price || !duration) { toast.error("Fill all plan fields."); return; }
+    const valid = validatePlanForm();
+    if (!valid) return;
+
+    setIsSavingPlan(true);
     try {
       const { error } = await supabase
         .from("gym_plans")
-        .update({ name, plan_name: name, price: Number(price), duration: Number(duration) })
-        .eq("id", editingPlan.id);
+        .update({ name: valid.name, plan_name: valid.name, price: valid.priceNum, duration: valid.durationNum, duration_days: valid.durationNum * 30 })
+        .eq("id", editingPlan.id)
+        .eq("gym_id", gymId);
       if (error) throw error;
       setPlans((prev) => prev.map((p) => p.id === editingPlan.id
-        ? { ...p, name, plan_name: name, price: Number(price), duration: Number(duration) }
+        ? { ...p, name: valid.name, plan_name: valid.name, price: valid.priceNum, duration: valid.durationNum }
         : p,
       ));
       setEditingPlan(null);
@@ -660,20 +731,37 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
       toast.success("Plan updated!");
     } catch (err: unknown) {
       toast.error("Update plan failed: " + (err as Error).message);
+    } finally {
+      setIsSavingPlan(false);
     }
-  }, [editingPlan, planForm]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingPlan, planForm, gymId]);
 
-  const handleDeletePlan = useCallback(async (id: string) => {
-    if (!window.confirm("Delete this plan?")) return;
-    try {
-      const { error } = await supabase.from("gym_plans").delete().eq("id", id);
-      if (error) throw error;
-      setPlans((prev) => prev.filter((p) => p.id !== id));
-      toast.success("Plan deleted.");
-    } catch (err: unknown) {
-      toast.error("Delete failed: " + (err as Error).message);
-    }
-  }, []);
+  // Delete with an inline confirmation toast (no blocking native dialog).
+  const handleDeletePlan = useCallback((id: string, name?: string) => {
+    toast(`Delete "${name || "this plan"}"?`, {
+      description: "New sign-ups won't see it. Existing members keep their current plan.",
+      action: {
+        label: "Delete",
+        onClick: async () => {
+          setDeletingPlanId(id);
+          try {
+            let query = supabase.from("gym_plans").delete().eq("id", id);
+            if (gymId) query = query.eq("gym_id", gymId);
+            const { error } = await query;
+            if (error) throw error;
+            setPlans((prev) => prev.filter((p) => p.id !== id));
+            toast.success("Plan deleted.");
+          } catch (err: unknown) {
+            toast.error("Delete failed: " + (err as Error).message);
+          } finally {
+            setDeletingPlanId(null);
+          }
+        },
+      },
+      cancel: { label: "Cancel", onClick: () => {} },
+    });
+  }, [gymId]);
 
   const startEditing = useCallback((plan: Plan) => {
     setEditingPlan(plan);
@@ -738,15 +826,42 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
     }
   }, [currency, userId]);
 
+  // FLOW 1 — Mock SaaS checkout (gym owner → platform). Shows a button spinner,
+  // simulates the gateway round-trip (2s) so the UI never freezes, then a success
+  // toast. No real charge: wire the Razorpay order + webhook later (handleGetPro
+  // above holds the real PhonePe/Stripe path to re-enable).
+  const mockSaaSCheckout = useCallback(async () => {
+    if (isProcessingBilling) return;
+    setIsProcessingBilling(true);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      toast.success("Mock Gateway: Subscription Activated. Connect Razorpay API here later.");
+    } catch {
+      toast.error("Could not start checkout. Please try again.");
+    } finally {
+      setIsProcessingBilling(false);
+    }
+  }, [isProcessingBilling]);
+
   // ── Security / Support ────────────────────────────────────────────────────────
   const handlePasswordReset = useCallback(async () => {
     if (!settings.owner_email) { toast.error("Owner email not set."); return; }
-    const { error } = await supabase.auth.resetPasswordForEmail(settings.owner_email, {
-      redirectTo: `${window.location.origin}/reset-password`,
-    });
-    if (error) toast.error(error.message);
-    else toast.success("Password reset link sent!");
-  }, [settings.owner_email]);
+    if (isResettingPassword) return;
+    setIsResettingPassword(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(settings.owner_email, {
+        // window.location.origin works in dev + prod; ensure /reset-password is in
+        // Supabase Auth → URL Configuration → Redirect URLs.
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) throw error;
+      toast.success("Reset link sent to your registered email!");
+    } catch (err: unknown) {
+      toast.error((err as Error).message || "Could not send reset link. Please try again.");
+    } finally {
+      setIsResettingPassword(false);
+    }
+  }, [settings.owner_email, isResettingPassword]);
 
   // ── Derived ───────────────────────────────────────────────────────────────────
   const logoFallback = (settings.gym_name || "RF")
@@ -755,6 +870,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
 
   const menuItems = [
     { name: "Gym Profile", icon: Building2 },
+    { name: "Wall QR", icon: QrCode },
     { name: "Security", icon: ShieldCheck },
     { name: "Notifications", icon: Bell },
     { name: "Billing & Plans", icon: CreditCard },
@@ -904,22 +1020,35 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                           />
                         </div>
 
+                        {/* Gym UPI ID — members pay the owner directly (zero platform fee) */}
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label className="text-slate-600">Gym UPI ID</Label>
+                          <Input
+                            value={settings.upi_id ?? ""}
+                            onChange={(e) => persistSettings({ upi_id: e.target.value.trim() })}
+                            placeholder="gymname@ybl"
+                            inputMode="email"
+                            autoCapitalize="none"
+                            className="rounded-xl border-slate-200 bg-slate-50"
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Members pay fees & store items straight to this UPI ID — Gymphony takes
+                            <span className="font-semibold text-slate-600"> 0% fee</span>. Used to generate their payment QR.
+                          </p>
+                        </div>
+
                         <div className="space-y-2">
                           <Label className="text-slate-600">Opening Time</Label>
-                          <Input
-                            type="time"
+                          <TimePicker
                             value={settings.opening_time}
-                            onChange={(e) => persistSettings({ opening_time: e.target.value })}
-                            className="rounded-xl border-slate-200 bg-slate-50"
+                            onChange={(v) => persistSettings({ opening_time: v })}
                           />
                         </div>
                         <div className="space-y-2">
                           <Label className="text-slate-600">Closing Time</Label>
-                          <Input
-                            type="time"
+                          <TimePicker
                             value={settings.closing_time}
-                            onChange={(e) => persistSettings({ closing_time: e.target.value })}
-                            className="rounded-xl border-slate-200 bg-slate-50"
+                            onChange={(v) => persistSettings({ closing_time: v })}
                           />
                         </div>
 
@@ -933,6 +1062,54 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                           />
                         </div>
                       </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Legal & Compliance — required for payment-gateway approval */}
+                  <Card className="border-border bg-white shadow-soft">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-lg font-bold text-slate-900">
+                        <ShieldCheck className="h-5 w-5 text-primary" />
+                        Legal &amp; Compliance Links
+                      </CardTitle>
+                      <CardDescription>
+                        Required for payment-gateway approval. These links surface in the Member App &amp;
+                        checkout footer so members can review your policies before paying.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {(
+                        [
+                          { label: "Terms & Conditions URL", key: "terms_url", placeholder: "https://yourgym.com/terms" },
+                          { label: "Privacy Policy URL", key: "privacy_url", placeholder: "https://yourgym.com/privacy" },
+                          { label: "Cancellation & Refund Policy URL", key: "refund_url", placeholder: "https://yourgym.com/refunds" },
+                        ] as { label: string; key: keyof GymSettings; placeholder: string }[]
+                      ).map(({ label, key, placeholder }) => (
+                        <div key={key} className="space-y-2">
+                          <Label className="text-slate-600">{label}</Label>
+                          <Input
+                            type="url"
+                            inputMode="url"
+                            autoCapitalize="none"
+                            value={(settings[key] as string) ?? ""}
+                            onChange={(e) => persistSettings({ [key]: e.target.value.trim() })}
+                            onBlur={(e) =>
+                              setLegalErrors((prev) => ({ ...prev, [key]: !isValidUrl(e.target.value) }))
+                            }
+                            placeholder={placeholder}
+                            className={`rounded-xl bg-slate-50 ${
+                              legalErrors[key]
+                                ? "border-red-300 focus-visible:ring-red-300"
+                                : "border-slate-200"
+                            }`}
+                          />
+                          {legalErrors[key] && (
+                            <p className="text-xs font-medium text-red-500">
+                              Enter a valid URL, e.g. https://yourgym.com/terms
+                            </p>
+                          )}
+                        </div>
+                      ))}
                     </CardContent>
                   </Card>
 
@@ -1263,6 +1440,15 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                 </>
               )}
 
+              {/* ── WALL QR ─────────────────────────────────────────────────── */}
+              {activeCategory === "Wall QR" && (
+                <WallQRTab
+                  gymId={gymId}
+                  gymName={settings.gym_name}
+                  hasLocation={settings.latitude != null && settings.longitude != null}
+                />
+              )}
+
               {/* ── SECURITY ────────────────────────────────────────────────── */}
               {activeCategory === "Security" && (
                 <Card className="border-border bg-white shadow-soft">
@@ -1278,8 +1464,16 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                       <p className="text-center text-sm text-slate-600">
                         A reset link will be sent to <strong>{settings.owner_email}</strong>.
                       </p>
-                      <Button onClick={handlePasswordReset} className="h-12 w-full rounded-xl bg-slate-900 font-bold text-white shadow-lg">
-                        Send Reset Link
+                      <Button
+                        onClick={handlePasswordReset}
+                        disabled={isResettingPassword}
+                        className="h-12 w-full rounded-xl bg-slate-900 font-bold text-white shadow-lg disabled:opacity-70"
+                      >
+                        {isResettingPassword ? (
+                          <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Sending…</>
+                        ) : (
+                          "Send Reset Link"
+                        )}
                       </Button>
                     </div>
                   </CardContent>
@@ -1288,13 +1482,37 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
 
               {/* ── NOTIFICATIONS ───────────────────────────────────────────── */}
               {activeCategory === "Notifications" && (
-                <Card className="border-border bg-white py-20 shadow-soft">
-                  <CardContent className="space-y-3 text-center">
-                    <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
-                      <Settings className="h-6 w-6 animate-spin-slow" />
+                <Card className="border-border bg-white shadow-soft">
+                  <CardHeader>
+                    <div className="flex items-center gap-3">
+                      <Bell className="h-5 w-5 text-primary" />
+                      <CardTitle className="text-lg font-bold text-slate-900">Notification Preferences</CardTitle>
                     </div>
-                    <h3 className="font-bold text-slate-900">Notifications — Coming Soon</h3>
-                    <p className="text-sm text-muted-foreground">We're fine-tuning these settings for you.</p>
+                    <CardDescription>Choose which alerts you receive on your dashboard.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {(
+                      [
+                        { key: "notify_new_member", label: "Alert on New Member Signup", desc: "Get notified when a new member joins your gym." },
+                        { key: "notify_pending_payment", label: "Alert on Pending UPI Payments", desc: "Know the moment a member submits a UPI payment to approve." },
+                        { key: "notify_low_stock", label: "Low Stock / Inventory Alerts", desc: "Be warned when a store product is running low." },
+                      ] as { key: keyof GymSettings; label: string; desc: string }[]
+                    ).map(({ key, label, desc }, i) => (
+                      <div key={key}>
+                        {i > 0 && <div className="mb-4 h-px bg-slate-100" />}
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="space-y-0.5">
+                            <Label className="font-medium text-slate-900">{label}</Label>
+                            <p className="text-xs text-muted-foreground">{desc}</p>
+                          </div>
+                          <Switch
+                            checked={Boolean(settings[key])}
+                            onCheckedChange={(checked) => persistSettings({ [key]: checked })}
+                            className="data-[state=checked]:bg-primary"
+                          />
+                        </div>
+                      </div>
+                    ))}
                   </CardContent>
                 </Card>
               )}
@@ -1314,10 +1532,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                     <div className="mx-auto flex max-w-xs flex-col gap-3">
                       {hasAccess(settings.plan_type, "whatsapp_support") ? (
                         <Button
-                          onClick={() => {
-                            const phone = settings.contact_number.replace(/\D/g, "") || "7906240659";
-                            window.open(`https://wa.me/${phone}?text=${encodeURIComponent("Hi, I need support with my gym dashboard.")}`, "_blank");
-                          }}
+                          onClick={() => window.open(SUPPORT_WHATSAPP_URL, "_blank", "noopener,noreferrer")}
                           className="rounded-xl bg-primary px-8 font-bold text-white shadow-lg shadow-primary/20"
                         >
                           Chat on WhatsApp
@@ -1370,7 +1585,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                     </div>
                     {settings.plan_type !== "Pro" && (
                       <Button
-                        onClick={handleGetPro}
+                        onClick={mockSaaSCheckout}
                         disabled={isProcessingBilling}
                         className="h-12 rounded-xl bg-primary px-6 font-black text-white shadow-glow"
                       >
@@ -1432,11 +1647,15 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                       </CardHeader>
                       <CardContent className="pt-0">
                         {settings.plan_type === "Pro" ? (
-                          <Button onClick={() => toast.info("Subscription management coming soon!")} className="h-14 w-full rounded-full bg-white font-black text-slate-900 shadow-xl">
-                            Active Subscription
+                          <Button
+                            onClick={mockSaaSCheckout}
+                            disabled={isProcessingBilling}
+                            className="h-14 w-full rounded-full bg-white font-black text-slate-900 shadow-xl"
+                          >
+                            {isProcessingBilling ? <Loader2 className="h-5 w-5 animate-spin text-slate-900" /> : "Active Subscription"}
                           </Button>
                         ) : (
-                          <Button onClick={handleGetPro} disabled={isProcessingBilling} className="h-14 w-full rounded-full bg-primary text-lg font-black text-white">
+                          <Button onClick={mockSaaSCheckout} disabled={isProcessingBilling} className="h-14 w-full rounded-full bg-primary text-lg font-black text-white">
                             {isProcessingBilling ? <Loader2 className="h-5 w-5 animate-spin" /> : "Get Pro"}
                           </Button>
                         )}
@@ -1525,9 +1744,14 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                             <div className="mt-4 flex justify-end">
                               <Button
                                 onClick={editingPlan ? handleUpdatePlan : handleAddPlan}
+                                disabled={isSavingPlan}
                                 className="rounded-xl bg-gradient-brand px-6 font-bold text-primary-foreground"
                               >
-                                {editingPlan ? "Update Plan" : "Add Plan"}
+                                {isSavingPlan ? (
+                                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" />{editingPlan ? "Updating…" : "Adding…"}</>
+                                ) : (
+                                  editingPlan ? "Update Plan" : "Add Plan"
+                                )}
                               </Button>
                             </div>
                           </motion.div>
@@ -1567,8 +1791,14 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                                 <Button variant="ghost" size="icon" onClick={() => startEditing(plan)} className="h-9 w-9 rounded-xl text-muted-foreground hover:bg-primary/5 hover:text-primary">
                                   <Edit2 className="h-4 w-4" />
                                 </Button>
-                                <Button variant="ghost" size="icon" onClick={() => handleDeletePlan(plan.id)} className="h-9 w-9 rounded-xl text-muted-foreground hover:bg-red-50 hover:text-red-500">
-                                  <Trash2 className="h-4 w-4" />
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => handleDeletePlan(plan.id, plan.name)}
+                                  disabled={deletingPlanId === plan.id}
+                                  className="h-9 w-9 rounded-xl text-muted-foreground hover:bg-red-50 hover:text-red-500"
+                                >
+                                  {deletingPlanId === plan.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                                 </Button>
                               </div>
                             </div>

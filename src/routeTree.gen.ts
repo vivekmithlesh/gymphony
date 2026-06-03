@@ -10,9 +10,12 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as VerifyOtpRouteImport } from './routes/verify-otp'
+import { Route as TermsRouteImport } from './routes/terms'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
+import { Route as RefundRouteImport } from './routes/refund'
+import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as OwnerDashboardRouteImport } from './routes/owner-dashboard'
 import { Route as MemberLoginRouteImport } from './routes/member-login'
 import { Route as MemberDashboardRouteImport } from './routes/member-dashboard'
@@ -31,6 +34,11 @@ const VerifyOtpRoute = VerifyOtpRouteImport.update({
   path: '/verify-otp',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SignupRoute = SignupRouteImport.update({
   id: '/signup',
   path: '/signup',
@@ -44,6 +52,16 @@ const SettingsRoute = SettingsRouteImport.update({
 const ResetPasswordRoute = ResetPasswordRouteImport.update({
   id: '/reset-password',
   path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RefundRoute = RefundRouteImport.update({
+  id: '/refund',
+  path: '/refund',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OwnerDashboardRoute = OwnerDashboardRouteImport.update({
@@ -119,9 +137,12 @@ export interface FileRoutesByFullPath {
   '/member-dashboard': typeof MemberDashboardRoute
   '/member-login': typeof MemberLoginRoute
   '/owner-dashboard': typeof OwnerDashboardRoute
+  '/privacy': typeof PrivacyRoute
+  '/refund': typeof RefundRoute
   '/reset-password': typeof ResetPasswordRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
+  '/terms': typeof TermsRoute
   '/verify-otp': typeof VerifyOtpRoute
   '/gym-detail/$gymId': typeof GymDetailGymIdRoute
 }
@@ -137,9 +158,12 @@ export interface FileRoutesByTo {
   '/member-dashboard': typeof MemberDashboardRoute
   '/member-login': typeof MemberLoginRoute
   '/owner-dashboard': typeof OwnerDashboardRoute
+  '/privacy': typeof PrivacyRoute
+  '/refund': typeof RefundRoute
   '/reset-password': typeof ResetPasswordRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
+  '/terms': typeof TermsRoute
   '/verify-otp': typeof VerifyOtpRoute
   '/gym-detail/$gymId': typeof GymDetailGymIdRoute
 }
@@ -156,9 +180,12 @@ export interface FileRoutesById {
   '/member-dashboard': typeof MemberDashboardRoute
   '/member-login': typeof MemberLoginRoute
   '/owner-dashboard': typeof OwnerDashboardRoute
+  '/privacy': typeof PrivacyRoute
+  '/refund': typeof RefundRoute
   '/reset-password': typeof ResetPasswordRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
+  '/terms': typeof TermsRoute
   '/verify-otp': typeof VerifyOtpRoute
   '/gym-detail/$gymId': typeof GymDetailGymIdRoute
 }
@@ -176,9 +203,12 @@ export interface FileRouteTypes {
     | '/member-dashboard'
     | '/member-login'
     | '/owner-dashboard'
+    | '/privacy'
+    | '/refund'
     | '/reset-password'
     | '/settings'
     | '/signup'
+    | '/terms'
     | '/verify-otp'
     | '/gym-detail/$gymId'
   fileRoutesByTo: FileRoutesByTo
@@ -194,9 +224,12 @@ export interface FileRouteTypes {
     | '/member-dashboard'
     | '/member-login'
     | '/owner-dashboard'
+    | '/privacy'
+    | '/refund'
     | '/reset-password'
     | '/settings'
     | '/signup'
+    | '/terms'
     | '/verify-otp'
     | '/gym-detail/$gymId'
   id:
@@ -212,9 +245,12 @@ export interface FileRouteTypes {
     | '/member-dashboard'
     | '/member-login'
     | '/owner-dashboard'
+    | '/privacy'
+    | '/refund'
     | '/reset-password'
     | '/settings'
     | '/signup'
+    | '/terms'
     | '/verify-otp'
     | '/gym-detail/$gymId'
   fileRoutesById: FileRoutesById
@@ -231,9 +267,12 @@ export interface RootRouteChildren {
   MemberDashboardRoute: typeof MemberDashboardRoute
   MemberLoginRoute: typeof MemberLoginRoute
   OwnerDashboardRoute: typeof OwnerDashboardRoute
+  PrivacyRoute: typeof PrivacyRoute
+  RefundRoute: typeof RefundRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   SettingsRoute: typeof SettingsRoute
   SignupRoute: typeof SignupRoute
+  TermsRoute: typeof TermsRoute
   VerifyOtpRoute: typeof VerifyOtpRoute
   GymDetailGymIdRoute: typeof GymDetailGymIdRoute
 }
@@ -245,6 +284,13 @@ declare module '@tanstack/react-router' {
       path: '/verify-otp'
       fullPath: '/verify-otp'
       preLoaderRoute: typeof VerifyOtpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/signup': {
@@ -266,6 +312,20 @@ declare module '@tanstack/react-router' {
       path: '/reset-password'
       fullPath: '/reset-password'
       preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/refund': {
+      id: '/refund'
+      path: '/refund'
+      fullPath: '/refund'
+      preLoaderRoute: typeof RefundRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/owner-dashboard': {
@@ -367,9 +427,12 @@ const rootRouteChildren: RootRouteChildren = {
   MemberDashboardRoute: MemberDashboardRoute,
   MemberLoginRoute: MemberLoginRoute,
   OwnerDashboardRoute: OwnerDashboardRoute,
+  PrivacyRoute: PrivacyRoute,
+  RefundRoute: RefundRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
+  TermsRoute: TermsRoute,
   VerifyOtpRoute: VerifyOtpRoute,
   GymDetailGymIdRoute: GymDetailGymIdRoute,
 }

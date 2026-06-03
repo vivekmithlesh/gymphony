@@ -200,6 +200,14 @@
     padding: 4px;
     box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
   }
+  /* Seamless horizontal scroller (e.g. mobile tab bar) — no visible scrollbar. */
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
   .custom-scrollbar::-webkit-scrollbar {
     width: 4px;
   }

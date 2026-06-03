@@ -109,11 +109,15 @@ pol_report as (
          ) then 'ok' else 'NONE' end
   from expected_tbls t
 )
-select * from col_report
-union all select * from tbl_report
-union all select * from rt_report
-union all select * from pol_report
+-- The UNION is wrapped in a subquery so ORDER BY can use a CASE expression.
+-- (Postgres forbids expressions in an ORDER BY applied directly to a set op.)
+select * from (
+  select * from col_report
+  union all select * from tbl_report
+  union all select * from rt_report
+  union all select * from pol_report
+) q
 order by
-  case section when 'TABLE' then 1 when 'COLUMN' then 2 when 'REALTIME' then 3 else 4 end,
-  status desc,   -- surfaces MISSING / OFF / NONE first
-  object;
+  case q.section when 'TABLE' then 1 when 'COLUMN' then 2 when 'REALTIME' then 3 else 4 end,
+  q.status desc,   -- surfaces MISSING / OFF / NONE first
+  q.object;

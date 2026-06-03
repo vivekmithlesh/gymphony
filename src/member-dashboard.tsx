@@ -17,7 +17,7 @@ function AnimatedNumber({ value }: { value: number }) {
 import {
   CalendarCheck2, CheckCircle2, CircleDashed, Dumbbell, Flame, LogOut, LayoutDashboard,
   Sparkles, Trophy, QrCode, Loader2, Zap, Search, Map as MapIcon, MapPin, Activity,
-  CreditCard, Package, ChevronRight, TrendingUp, Clock, User, Settings, Bell, Building2,
+  CreditCard, Package, ShoppingBag, ChevronRight, TrendingUp, Clock, User, Settings, Bell, Building2,
   Star, Phone, ArrowUpRight, Camera, X, Scan, Maximize2, ShieldCheck
 } from "lucide-react";
 import { toast } from "sonner";
@@ -44,8 +44,10 @@ import { CityGymExplorer } from "@/components/CityGymExplorer";
 import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
 import { isValidInternationalPhone, normalizeToE164Phone } from "@/lib/phone";
 import { useRealtimeLeaderboard } from "@/hooks/useRealtimeLeaderboard";
-import { initiatePhonePePayment } from "@/lib/phonepe";
+import { MemberUpiCheckout } from "@/components/MemberUpiCheckout";
+import { LegalLinksFooter } from "@/components/LegalLinksFooter";
 import { MemberAttendanceTab } from "@/components/MemberAttendanceTab";
+import { MemberGymStore } from "@/components/MemberGymStore";
 import { MemberNotesTab } from "@/components/MemberNotesTab";
 import { MemberGoalsCard } from "@/components/MemberGoalsCard";
 
@@ -68,7 +70,8 @@ interface Member {
 
 interface GymInfo {
   id: string; gym_name: string; opening_time?: string; city?: string; address?: string; gym_owner_id?: string;
-  latitude?: number | null; longitude?: number | null;
+  latitude?: number | null; longitude?: number | null; upi_id?: string | null;
+  terms_url?: string | null; privacy_url?: string | null; refund_url?: string | null;
 }
 
 interface GymPlan {
@@ -111,6 +114,7 @@ export default function MemberDashboard() {
   const [isSearching, setIsSearching] = useState(false);
   const [showPlansModal, setShowPlansModal] = useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+  const [checkoutPlan, setCheckoutPlan] = useState<GymPlan | null>(null);
   const [showSuccessAnimation, setShowSuccessAnimation] = useState(false);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -345,7 +349,7 @@ export default function MemberDashboard() {
   }, []);
 
   const resolveGymInfo = useCallback(async (gymId: string) => {
-    const settingsCols = "id, gym_name, opening_time, city, address, gym_owner_id, latitude, longitude";
+    const settingsCols = "id, gym_name, opening_time, city, address, gym_owner_id, latitude, longitude, upi_id, terms_url, privacy_url, refund_url";
     const { data: gymById } = await supabase.from("gym_settings").select(settingsCols).eq("id", gymId).maybeSingle();
     if (gymById) return gymById;
     const { data: gymByOwner } = await supabase.from("gym_settings").select(settingsCols).eq("gym_owner_id", gymId).maybeSingle();
@@ -524,22 +528,20 @@ export default function MemberDashboard() {
     }
   };
 
-  const handleBuyPlan = async (plan: GymPlan) => {
-    if (!member?.id || !member?.gym_id || !gymInfo?.gym_owner_id) { toast.error("Gym context missing."); return; }
-    const gymId = member.gym_id;
-    const ownerId = gymInfo.gym_owner_id;
-    const memberId = member.id;
-    try {
-      await initiatePhonePePayment(plan.price, memberId, async () => {
-        await supabase.from("payments").insert([{ member_id: memberId, gym_id: gymId, gym_owner_id: ownerId, amount: plan.price, plan_name: plan.plan_name, status: "Success", payment_date: new Date().toISOString() }]);
-        const expiryDate = new Date(); expiryDate.setDate(expiryDate.getDate() + (Number(plan.duration_days) || 30));
-        await supabase.from("members").update({ membership_plan: plan.plan_name, status: "Active", expiry_date: expiryDate.toISOString(), joining_date: new Date().toISOString() }).eq("id", memberId);
-        await supabase.from("profiles").update({ status: "Active", subscription_status: "Active" }).eq("id", memberId);
-        toast.success(`Plan ${plan.plan_name} activated successfully!`);
-        setShowPlansModal(false);
-        await refreshGymContext(gymId, memberId);
-      }, setIsProcessingPayment);
-    } catch (err) { toast.error("Payment failed."); } finally { setIsProcessingPayment(false); }
+  // Zero-fee UPI flow: open the UPI checkout for the chosen plan. The member
+  // pays the owner directly and submits for manual verification — activation
+  // happens when the owner approves the pending payment.
+  const handleBuyPlan = (plan: GymPlan) => {
+    if (!member?.id || !member?.gym_id || !gymInfo?.gym_owner_id) {
+      toast.error("Gym context missing.");
+      return;
+    }
+    if (!gymInfo?.upi_id) {
+      toast.error("This gym hasn't set up UPI payments yet. Please contact the front desk.");
+      return;
+    }
+    setShowPlansModal(false);
+    setCheckoutPlan(plan);
   };
 
   const handleJoinGym = async (gymId: string) => {
@@ -567,6 +569,7 @@ export default function MemberDashboard() {
     { id: "leaderboard", label: "Leaderboard", icon: Trophy },
     { id: "explorer", label: "Explorer", icon: MapIcon },
     { id: "attendance", label: "Attendance", icon: CalendarCheck2 },
+    { id: "store", label: "Store", icon: ShoppingBag },
     { id: "notes", label: "Notes", icon: Dumbbell },
   ];
 
@@ -588,7 +591,7 @@ export default function MemberDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50/50 font-sans">
+    <div className="min-h-screen bg-background text-foreground font-sans">
       <AnimatePresence>
         {showSuccessAnimation && (
           <motion.div
@@ -604,15 +607,15 @@ export default function MemberDashboard() {
         )}
       </AnimatePresence>
 
-      <header className="sticky top-0 z-30 flex items-center justify-between h-16 px-4 bg-white/80 backdrop-blur-sm border-b border-gray-200/80">
+      <header className="sticky top-0 z-30 flex items-center justify-between h-16 px-4 md:px-10 bg-background/70 backdrop-blur-xl border-b border-white/10">
         <div className="flex items-center gap-3">
           <Avatar>
             <AvatarImage src={member.avatar_url || undefined} alt={member.full_name || "Member"} />
-            <AvatarFallback>{firstName.charAt(0)}</AvatarFallback>
+            <AvatarFallback className="bg-gradient-brand text-white font-bold">{firstName.charAt(0)}</AvatarFallback>
           </Avatar>
           <div>
-            <h1 className="text-lg font-semibold text-gray-800 leading-tight">Hi, {firstName}!</h1>
-            <p className="text-xs text-gray-500">
+            <h1 className="text-lg font-semibold leading-tight tracking-tight">Hi, {firstName}!</h1>
+            <p className="text-xs text-muted-foreground">
               {gymInfo?.gym_name ? (
                 <span className="inline-flex items-center gap-1">
                   <Building2 className="h-3 w-3 text-indigo-500" />{gymInfo.gym_name}
@@ -679,55 +682,65 @@ export default function MemberDashboard() {
         </div>
       </header>
 
-      <main className="p-4 md:p-6">
+      <main className="px-4 py-6 md:px-10 lg:py-8">
         {!member.gym_id ? (
           <div className="max-w-2xl mx-auto text-center">
-            <motion.div initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="p-8 bg-white border rounded-xl shadow-sm">
-              <Building2 className="w-16 h-16 mx-auto text-blue-500" />
-              <h2 className="mt-4 text-2xl font-bold text-gray-800">Join a Gym to Get Started</h2>
-              <p className="mt-2 text-gray-600">Search for your local gym to connect with your community and start tracking your progress.</p>
-              <div className="relative max-w-md mx-auto mt-6">
-                <Search className="absolute w-5 h-5 text-gray-400 left-3 top-1/2 -translate-y-1/2" />
-                <Input
-                  type="text"
-                  placeholder="Search for a gym by name or city..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-10"
-                />
-                {isSearching && <Loader2 className="absolute w-5 h-5 text-gray-400 right-3 top-1/2 -translate-y-1/2 animate-spin" />}
-              </div>
-              {searchResults.length > 0 && (
-                <div className="mt-4 space-y-2 text-left">
-                  {searchResults.map(gym => (
-                    <div key={gym.id} className="flex items-center justify-between p-3 transition-colors bg-gray-50 rounded-lg hover:bg-gray-100">
-                      <div className="flex items-center gap-3">
-                        <Avatar>
-                          <AvatarImage src={gym.logo_url} />
-                          <AvatarFallback>{gym.gym_name.charAt(0)}</AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <p className="font-semibold">{gym.gym_name}</p>
-                          <p className="text-sm text-gray-500">{gym.city}</p>
+            <motion.div initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}>
+              <Card className="border-white/10 bg-white/5 backdrop-blur-xl">
+                <CardContent className="p-8">
+                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-brand text-white shadow-glow">
+                    <Building2 className="w-8 h-8" />
+                  </div>
+                  <h2 className="mt-4 text-2xl font-bold tracking-tight">Join a Gym to Get Started</h2>
+                  <p className="mt-2 text-muted-foreground">Search for your local gym to connect with your community and start tracking your progress.</p>
+                  <div className="relative max-w-md mx-auto mt-6">
+                    <Search className="absolute w-5 h-5 text-muted-foreground left-3 top-1/2 -translate-y-1/2" />
+                    <Input
+                      type="text"
+                      placeholder="Search for a gym by name or city..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-10 border-white/10 bg-white/5 backdrop-blur-xl"
+                    />
+                    {isSearching && <Loader2 className="absolute w-5 h-5 text-muted-foreground right-3 top-1/2 -translate-y-1/2 animate-spin" />}
+                  </div>
+                  {searchResults.length > 0 && (
+                    <div className="mt-4 space-y-2 text-left">
+                      {searchResults.map(gym => (
+                        <div key={gym.id} className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-white/5 backdrop-blur-xl transition-colors hover:border-primary/30">
+                          <div className="flex items-center gap-3">
+                            <Avatar>
+                              <AvatarImage src={gym.logo_url} />
+                              <AvatarFallback className="bg-gradient-brand text-white font-bold">{gym.gym_name.charAt(0)}</AvatarFallback>
+                            </Avatar>
+                            <div>
+                              <p className="font-semibold">{gym.gym_name}</p>
+                              <p className="text-sm text-muted-foreground">{gym.city}</p>
+                            </div>
+                          </div>
+                          <Button className="rounded-lg bg-gradient-brand text-white shadow-glow" onClick={() => handleJoinGym(gym.id)} disabled={isSavingGymId}>
+                            {isSavingGymId ? <Loader2 className="w-4 h-4 animate-spin" /> : "Join"}
+                          </Button>
                         </div>
-                      </div>
-                      <Button onClick={() => handleJoinGym(gym.id)} disabled={isSavingGymId}>
-                        {isSavingGymId ? <Loader2 className="w-4 h-4 animate-spin" /> : "Join"}
-                      </Button>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              )}
+                  )}
+                </CardContent>
+              </Card>
             </motion.div>
           </div>
         ) : (
           <>
-            <div className="flex mb-6 border-b overflow-x-auto">
+            <div className="no-scrollbar -mx-4 mb-6 flex gap-2 overflow-x-auto px-4 md:mx-0 md:px-0">
               {tabs.map(tab => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors ${activeTab === tab.id ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                  className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold whitespace-nowrap transition-all ${
+                    activeTab === tab.id
+                      ? 'bg-gradient-brand text-white shadow-glow'
+                      : 'border border-white/10 bg-white/5 text-muted-foreground hover:text-foreground hover:border-primary/30'
+                  }`}
                 >
                   <tab.icon className="w-4 h-4" />
                   {tab.label}
@@ -748,43 +761,44 @@ export default function MemberDashboard() {
                   <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
                     <div className="space-y-6 lg:col-span-2">
                       {gymInfo && (
-                        <Card className="border-0 bg-linear-to-r from-indigo-600 to-purple-600 text-white shadow-lg">
-                          <CardContent className="flex items-center justify-between gap-4 p-5">
+                        <Card className="relative overflow-hidden border-white/10 bg-gradient-brand-soft backdrop-blur-xl">
+                          <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
                             <div className="flex min-w-0 items-center gap-3">
-                              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white/20">
+                              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-brand text-white shadow-glow">
                                 <Building2 className="h-6 w-6" />
                               </div>
                               <div className="min-w-0">
-                                <p className="text-xs uppercase tracking-wide text-white/70">Your Gym</p>
-                                <h3 className="truncate text-xl font-bold leading-tight">{gymInfo.gym_name}</h3>
-                                <p className="flex items-center gap-1 text-sm text-white/80">
-                                  <MapPin className="h-3.5 w-3.5" />
-                                  {gymInfo.address || gymInfo.city || "Location"}
+                                <p className="text-xs uppercase tracking-wide text-muted-foreground">Your Gym</p>
+                                <h3 className="truncate text-lg font-bold leading-tight tracking-tight">{gymInfo.gym_name}</h3>
+                                <p className="flex items-center gap-1 text-sm text-muted-foreground">
+                                  <MapPin className="h-3.5 w-3.5 shrink-0" />
+                                  <span className="truncate">{gymInfo.address || gymInfo.city || "Location"}</span>
                                   {gymInfo.latitude != null && gymInfo.longitude != null && (
-                                    <span className="ml-1 rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-medium">Located</span>
+                                    <span className="ml-1 shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">Located</span>
                                   )}
                                 </p>
                               </div>
                             </div>
-                            <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+                            <div className="flex shrink-0 gap-2">
                               {gymInfo.latitude != null && gymInfo.longitude != null && (
                                 <Button
-                                  variant="secondary"
-                                  className="rounded-xl"
+                                  variant="outline"
+                                  size="sm"
+                                  className="rounded-lg border-white/10 bg-white/5 backdrop-blur-xl"
                                   onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${gymInfo.latitude},${gymInfo.longitude}`, "_blank", "noopener")}
                                 >
-                                  <MapPin className="mr-2 h-4 w-4" /> Directions
+                                  <MapPin className="mr-1.5 h-3.5 w-3.5" /> Directions
                                 </Button>
                               )}
-                              <Button variant="secondary" className="rounded-xl" onClick={() => setActiveTab('explorer')}>
-                                <MapIcon className="mr-2 h-4 w-4" /> View on map
+                              <Button variant="outline" size="sm" className="rounded-lg border-white/10 bg-white/5 backdrop-blur-xl" onClick={() => setActiveTab('explorer')}>
+                                <MapIcon className="mr-1.5 h-3.5 w-3.5" /> Map
                               </Button>
                             </div>
                           </CardContent>
                         </Card>
                       )}
                       {/* Wall QR check-in — scan the gym's printed code to mark attendance */}
-                      <Card className={checkedInToday ? "border-emerald-500/40 bg-emerald-500/5" : ""}>
+                      <Card className={`border-white/10 backdrop-blur-xl ${checkedInToday ? "border-emerald-500/40 bg-emerald-500/5" : "bg-white/5"}`}>
                         <CardContent className="flex flex-col items-center justify-between gap-4 py-5 sm:flex-row">
                           <div className="flex items-center gap-3">
                             <div className={`flex h-11 w-11 items-center justify-center rounded-xl ${checkedInToday ? "bg-emerald-500/15 text-emerald-500" : "bg-violet-500/15 text-violet-500"}`}>
@@ -809,47 +823,33 @@ export default function MemberDashboard() {
                         </CardContent>
                       </Card>
 
-                      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-                        <Card>
-                          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-                            <CardTitle className="text-sm font-medium">Today's Burn</CardTitle>
-                            <Flame className="w-4 h-4 text-muted-foreground" />
-                          </CardHeader>
-                          <CardContent>
-                            <div className="text-2xl font-bold">
-                              <AnimatedNumber value={todayCalories} />
+                      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3">
+                        {([
+                          { title: "Today's Burn", icon: Flame, value: <AnimatedNumber value={todayCalories} />, sub: "calories" },
+                          { title: "Gym Rank", icon: Trophy, value: `#${gymRank ?? 'N/A'}`, sub: `in ${gymInfo?.city || 'your city'}` },
+                          { title: "Gym Vibe", icon: TrendingUp, value: <AnimatedNumber value={totalGymCalories} />, sub: "total calories today" },
+                        ] as const).map((stat) => (
+                          <Card key={stat.title} className="relative overflow-hidden border-white/10 bg-white/5 backdrop-blur-xl group hover:border-primary/30 transition-all h-full">
+                            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                              <stat.icon className="h-12 w-12" />
                             </div>
-                            <p className="text-xs text-muted-foreground">calories</p>
-                          </CardContent>
-                        </Card>
-                        <Card>
-                          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-                            <CardTitle className="text-sm font-medium">Gym Rank</CardTitle>
-                            <Trophy className="w-4 h-4 text-muted-foreground" />
-                          </CardHeader>
-                          <CardContent>
-                            <div className="text-2xl font-bold">#{gymRank ?? 'N/A'}</div>
-                            <p className="text-xs text-muted-foreground">in {gymInfo?.city || 'your city'}</p>
-                          </CardContent>
-                        </Card>
-                        <Card>
-                          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-                            <CardTitle className="text-sm font-medium">Gym Vibe</CardTitle>
-                            <TrendingUp className="w-4 h-4 text-muted-foreground" />
-                          </CardHeader>
-                          <CardContent>
-                            <div className="text-2xl font-bold">
-                              <AnimatedNumber value={totalGymCalories} />
-                            </div>
-                            <p className="text-xs text-muted-foreground">total calories today</p>
-                          </CardContent>
-                        </Card>
+                            <CardHeader className="pb-2">
+                              <CardTitle className="text-sm font-medium text-muted-foreground">{stat.title}</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <div className="text-3xl font-bold tracking-tight">{stat.value}</div>
+                              <p className="mt-2 text-xs text-muted-foreground">{stat.sub}</p>
+                            </CardContent>
+                          </Card>
+                        ))}
                       </div>
 
-                      <Card>
+                      <Card className="border-white/10 bg-white/5 backdrop-blur-xl">
                         <CardHeader>
-                          <CardTitle className="flex items-center gap-2">
-                            <Dumbbell className="w-5 h-5 text-blue-600" />
+                          <CardTitle className="flex items-center gap-2 tracking-tight">
+                            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-brand text-white shadow-glow">
+                              <Dumbbell className="w-5 h-5" />
+                            </span>
                             Log a Workout
                           </CardTitle>
                         </CardHeader>
@@ -857,7 +857,7 @@ export default function MemberDashboard() {
                           <div className="flex-1">
                             <Label htmlFor="activity">Activity</Label>
                             <Select value={selectedActivity} onValueChange={setSelectedActivity}>
-                              <SelectTrigger id="activity">
+                              <SelectTrigger id="activity" className="border-white/10 bg-white/5 backdrop-blur-xl">
                                 <SelectValue placeholder="Select activity" />
                               </SelectTrigger>
                               <SelectContent>
@@ -867,9 +867,9 @@ export default function MemberDashboard() {
                           </div>
                           <div className="flex-1">
                             <Label htmlFor="duration">Duration (minutes)</Label>
-                            <Input id="duration" type="number" value={durationMinutes} onChange={e => setDurationMinutes(e.target.value)} />
+                            <Input id="duration" type="number" value={durationMinutes} onChange={e => setDurationMinutes(e.target.value)} className="border-white/10 bg-white/5 backdrop-blur-xl" />
                           </div>
-                          <Button onClick={handleFinishSession} className="self-end w-full md:w-auto">
+                          <Button onClick={handleFinishSession} className="self-end w-full rounded-xl bg-gradient-brand text-white shadow-glow hover:shadow-primary/40 transition-all md:w-auto">
                             <CheckCircle2 className="w-4 h-4 mr-2" />
                             Finish Session
                           </Button>
@@ -902,7 +902,7 @@ export default function MemberDashboard() {
                 )}
 
                 {activeTab === 'leaderboard' && (
-                  <CityLeaderboard city={gymInfo?.city} />
+                  <CityLeaderboard />
                 )}
                 {activeTab === 'explorer' && (
                   <CityGymExplorer
@@ -919,6 +919,13 @@ export default function MemberDashboard() {
                   />
                 )}
                 {activeTab === 'attendance' && <MemberAttendanceTab memberId={member.id} />}
+                {activeTab === 'store' && (
+                  <MemberGymStore
+                    memberId={member.id}
+                    gymId={gymInfo?.id ?? member.gym_id ?? null}
+                    gymOwnerId={gymInfo?.gym_owner_id ?? null}
+                  />
+                )}
                 {activeTab === 'notes' && <MemberNotesTab memberId={member.id} />}
                 {activeTab === 'settings' && (
                   <ProfileSettings
@@ -993,6 +1000,31 @@ export default function MemberDashboard() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {member && (
+        <MemberUpiCheckout
+          open={!!checkoutPlan}
+          onClose={() => setCheckoutPlan(null)}
+          plan={checkoutPlan}
+          upiId={gymInfo?.upi_id}
+          gymName={gymInfo?.gym_name || ""}
+          memberId={member.id}
+          gymId={member.gym_id || gymInfo?.id || ""}
+          gymOwnerId={gymInfo?.gym_owner_id || ""}
+          termsUrl={gymInfo?.terms_url}
+          privacyUrl={gymInfo?.privacy_url}
+          refundUrl={gymInfo?.refund_url}
+          onSubmitted={() => member.gym_id && refreshGymContext(member.gym_id, member.id)}
+        />
+      )}
+
+      {/* Legal & compliance footer (owner sets these in Settings → Gym Profile). */}
+      <LegalLinksFooter
+        termsUrl={gymInfo?.terms_url}
+        privacyUrl={gymInfo?.privacy_url}
+        refundUrl={gymInfo?.refund_url}
+        className="px-6 py-8"
+      />
     </div>
   );
 }
