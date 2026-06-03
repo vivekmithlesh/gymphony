@@ -1,28 +1,32 @@
 // =============================================================================
-// Leaflet default-marker icon fix for Vite.
+// Leaflet default-marker icon fix.
 // -----------------------------------------------------------------------------
 // Leaflet's default `L.Icon.Default` loads its marker images by relative URL,
-// which Vite's bundler can't resolve — so default <Marker> pins render blank
-// (the marker is there, but its image is missing). Importing the images through
-// the bundler (`?url` forces a resolved URL string) and pointing the default
-// icon at them restores the stock blue pin.
+// which the bundler can't resolve — so default <Marker> pins render as a broken
+// image. Bundling the images via `import ... .png?url` ALSO fails in this
+// TanStack Start / Vite setup (deep node_modules asset URLs 404 in dev/SSR).
+//
+// So we point the default icon at the CDN-hosted Leaflet images (same version as
+// package.json, 1.9.4). The map tiles already load from a CDN, so this needs no
+// extra network permissions, and it's bundler- and SSR-independent.
 //
 // IMPORTANT: this module must NOT `import "leaflet"` at the top level — a
 // top-level leaflet import crashes SSR ("window is not defined") on every route
-// (see the leaflet-ssr-safety note). Instead each map applies the fix to the
-// SAME Leaflet instance it uses, by calling applyDefaultMarkerIcons(L). That
-// also avoids the static-vs-dynamic-import double-instance trap where
-// mergeOptions lands on a different `L` than the one drawing the marker.
+// (see the leaflet-ssr-safety note). Each map instead calls
+// applyDefaultMarkerIcons(L) on the SAME Leaflet instance it draws with, which
+// also avoids the static-vs-dynamic double-instance trap.
 // =============================================================================
-import iconRetinaUrl from "leaflet/dist/images/marker-icon-2x.png?url";
-import iconUrl from "leaflet/dist/images/marker-icon.png?url";
-import shadowUrl from "leaflet/dist/images/marker-shadow.png?url";
+const LEAFLET_CDN = "https://unpkg.com/leaflet@1.9.4/dist/images";
 
 type LeafletLike = {
   Icon: { Default: { mergeOptions: (options: Record<string, unknown>) => void } };
 };
 
-/** Point a Leaflet instance's default marker icon at the bundled images. */
+/** Point a Leaflet instance's default marker icon at the CDN-hosted images. */
 export function applyDefaultMarkerIcons(L: LeafletLike): void {
-  L.Icon.Default.mergeOptions({ iconRetinaUrl, iconUrl, shadowUrl });
+  L.Icon.Default.mergeOptions({
+    iconRetinaUrl: `${LEAFLET_CDN}/marker-icon-2x.png`,
+    iconUrl: `${LEAFLET_CDN}/marker-icon.png`,
+    shadowUrl: `${LEAFLET_CDN}/marker-shadow.png`,
+  });
 }
