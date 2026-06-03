@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { motion } from "framer-motion";
+import { LegalLinksFooter } from "@/components/LegalLinksFooter";
 import {
   ChevronLeft,
   ChevronRight,
@@ -37,6 +38,9 @@ interface GymDetail {
   total_calories?: number;
   active_members?: number;
   description?: string;
+  terms_url?: string | null;
+  privacy_url?: string | null;
+  refund_url?: string | null;
 }
 
 export function GymDetailView({ gymId, memberId }: { gymId: string; memberId?: string }) {
@@ -494,6 +498,14 @@ export function GymDetailView({ gymId, memberId }: { gymId: string; memberId?: s
             </CardContent>
           </Card>
         )}
+
+        {/* Legal & compliance footer — public-facing policies for gateway review. */}
+        <LegalLinksFooter
+          termsUrl={gym.terms_url}
+          privacyUrl={gym.privacy_url}
+          refundUrl={gym.refund_url}
+          className="mt-10 border-t border-slate-200 pt-6"
+        />
       </div>
     </div>
   );

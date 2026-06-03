@@ -6,13 +6,16 @@ export type GymLeaderboardEntry = {
   rank: number;
   gym_name: string;
   logo_url: string | null;
-  /** Total Vibe Score = aggregated calorie points of all the gym's members */
+  /** The ranking metric: total calories burned by the gym's members THIS MONTH. */
   vibe_points: number;
   city: string;
   latitude: number | null;
   longitude: number | null;
   email: string | null;
   mobile_number: string | null;
+  /** Active members + this month's check-ins, for the map popup stats. */
+  active_members: number;
+  checkins: number;
   /** flips briefly when a member of this gym logs a workout (drives the pulse) */
   is_active: boolean;
 };
@@ -58,12 +61,60 @@ export function useCityGymLeaderboard(city: string = "ALIGARH") {
 
   const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeGymsRef = useRef<Set<string>>(new Set());
+  // Gyms the SERVER reports as active (workout in the last ~12 min). This makes
+  // every active gym pulse for all viewers, not just on realtime events the
+  // viewer is allowed by RLS to receive.
+  const serverActiveRef = useRef<Set<string>>(new Set());
   const activeTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const [pulseVersion, setPulseVersion] = useState(0);
 
-  const fetchLeaderboard = useCallback(async () => {
+  const fetchLeaderboard = useCallback(async (opts?: { silent?: boolean }) => {
     try {
-      setIsLoading(true);
+      if (!opts?.silent) setIsLoading(true);
+
+      // Preferred path: server-side monthly aggregation (calories + active members
+      // + check-ins), ranked. SECURITY DEFINER so it can read across gyms safely.
+      const { data: rpcData, error: rpcError } = await supabase.rpc("get_city_gym_leaderboard", {
+        p_city: city,
+      });
+
+      if (!rpcError && Array.isArray(rpcData)) {
+        // Refresh the server-active set so the pulse reflects real recent activity.
+        const nextServerActive = new Set<string>();
+        for (const r of rpcData as any[]) {
+          if (r.is_active) nextServerActive.add(String(r.gym_id));
+        }
+        serverActiveRef.current = nextServerActive;
+
+        const entries: GymLeaderboardEntry[] = (rpcData as any[])
+          .map((r) => {
+            const id = String(r.gym_id);
+            return {
+              gym_id: id,
+              rank: 0,
+              gym_name: (r.gym_name || "Unknown Gym").trim(),
+              logo_url: r.logo_url || null,
+              vibe_points: toNumber(r.monthly_calories),
+              city: (r.city || "ALIGARH").trim(),
+              latitude: toCoord(r.latitude),
+              longitude: toCoord(r.longitude),
+              email: null,
+              mobile_number: null,
+              active_members: toNumber(r.active_members),
+              checkins: toNumber(r.monthly_checkins),
+              // Active = server says "recently worked out" OR a live realtime pulse.
+              is_active: Boolean(r.is_active) || activeGymsRef.current.has(id),
+            };
+          })
+          .map((e, i) => ({ ...e, rank: i + 1 }));
+        setLeaderboard(entries);
+        return;
+      }
+
+      // Fallback (RPC not deployed yet): client-side monthly aggregation.
+      const monthStart = new Date();
+      monthStart.setDate(1);
+      monthStart.setHours(0, 0, 0, 0);
 
       // gym_settings is the single source of identity (id, name, coords, logo).
       // Aggregating from here guarantees one row per real gym — no duplicates.
@@ -71,7 +122,10 @@ export function useCityGymLeaderboard(city: string = "ALIGARH") {
         supabase
           .from("gym_settings")
           .select("id, gym_name, city, latitude, longitude, logo_url, owner_email, contact_number"),
-        supabase.from("workout_logs").select("gym_id, calories_burned"),
+        supabase
+          .from("workout_logs")
+          .select("gym_id, calories_burned")
+          .gte("created_at", monthStart.toISOString()),
         // Legacy fallback score so a gym with vibe_points but no logs isn't shown as 0.
         supabase.from("gym_profiles").select("id, gym_id, vibe_points"),
       ]);
@@ -114,6 +168,8 @@ export function useCityGymLeaderboard(city: string = "ALIGARH") {
             longitude: toCoord(g.longitude),
             email: g.owner_email ?? null,
             mobile_number: g.contact_number ?? null,
+            active_members: 0,
+            checkins: 0,
             is_active: activeGymsRef.current.has(id),
           };
         })
@@ -135,7 +191,7 @@ export function useCityGymLeaderboard(city: string = "ALIGARH") {
 
   const refresh = useCallback(() => {
     if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
-    refreshTimeoutRef.current = setTimeout(() => void fetchLeaderboard(), 400);
+    refreshTimeoutRef.current = setTimeout(() => void fetchLeaderboard({ silent: true }), 400);
   }, [fetchLeaderboard]);
 
   const pulseGym = useCallback((gymId: string) => {
@@ -179,14 +235,26 @@ export function useCityGymLeaderboard(city: string = "ALIGARH") {
       activeTimersRef.current.forEach((t) => clearTimeout(t));
       activeTimersRef.current.clear();
       activeGymsRef.current.clear();
+      serverActiveRef.current.clear();
     };
   }, [city, pulseGym, refresh]);
 
   useEffect(() => {
     setLeaderboard((prev) =>
-      prev.map((e) => ({ ...e, is_active: activeGymsRef.current.has(e.gym_id) })),
+      prev.map((e) => ({
+        ...e,
+        // Server "recently active" OR a fresh realtime pulse.
+        is_active: serverActiveRef.current.has(e.gym_id) || activeGymsRef.current.has(e.gym_id),
+      })),
     );
   }, [pulseVersion]);
+
+  // Periodic silent refresh so the server is_active flag decays (a gym idle for
+  // >12 min stops pulsing) even when no realtime events are arriving.
+  useEffect(() => {
+    const interval = setInterval(() => void fetchLeaderboard({ silent: true }), 60_000);
+    return () => clearInterval(interval);
+  }, [fetchLeaderboard]);
 
   return { leaderboard, isLoading, isRealtimeConnected, refresh: fetchLeaderboard };
 }

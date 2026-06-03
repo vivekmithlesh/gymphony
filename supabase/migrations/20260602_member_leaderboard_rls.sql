@@ -28,12 +28,24 @@ $$;
 grant execute on function public.current_member_gym_id() to authenticated;
 
 -- members: a member may read fellow members of the same gym.
-drop policy if exists "Members can view gym-mates" on public.members;
-create policy "Members can view gym-mates"
-  on public.members
-  for select
-  to authenticated
-  using ( gym_id = public.current_member_gym_id() );
+-- NOTE: public.members is a VIEW in this database, and Postgres rejects RLS
+-- policies on views ("members is not a table"). A view already runs under its
+-- own (definer) security, so same-gym reads work without a policy. We only
+-- create the policy if members is an ordinary table (relkind 'r').
+do $$
+begin
+  if exists (
+    select 1 from pg_class
+    where relname = 'members' and relnamespace = 'public'::regnamespace and relkind = 'r'
+  ) then
+    drop policy if exists "Members can view gym-mates" on public.members;
+    create policy "Members can view gym-mates"
+      on public.members
+      for select
+      to authenticated
+      using ( gym_id = public.current_member_gym_id() );
+  end if;
+end $$;
 
 -- profiles: read the name/avatar of same-gym members (plus always your own row).
 drop policy if exists "Members can view gym-mate profiles" on public.profiles;
@@ -52,12 +64,18 @@ create policy "Members can view gym workout logs"
   using ( gym_id = public.current_member_gym_id() );
 
 -- Realtime + full row payloads for the leaderboard subscription (guarded).
+-- Only real tables can be added to a publication, so skip if members is a view.
 do $$
 begin
-  if not exists (
-    select 1 from pg_publication_tables
-    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'members'
-  ) then
+  if exists (
+       select 1 from pg_class
+       where relname = 'members' and relnamespace = 'public'::regnamespace and relkind = 'r'
+     )
+     and not exists (
+       select 1 from pg_publication_tables
+       where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'members'
+     )
+  then
     execute 'alter publication supabase_realtime add table public.members';
   end if;
 end $$;
