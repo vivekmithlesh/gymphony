@@ -21,8 +21,8 @@ const markerStyles = `
   /* --- Calorie "blink": a pulse ring rendered behind the blue pin for gyms that
      are live now. Ring size scales with the gym's calories (set inline). */
   @keyframes gpPulse {
-    0%   { transform: translate(-50%, -50%) scale(0.35); opacity: 0.5; }
-    100% { transform: translate(-50%, -50%) scale(1);    opacity: 0;   }
+    0%   { transform: translate(-50%, -50%) scale(0.3); opacity: 0.75; }
+    100% { transform: translate(-50%, -50%) scale(1);   opacity: 0;    }
   }
   .gp-pulse-wrap { position: relative; }
   .gp-pulse { position: absolute; left: 50%; top: 50%; border-radius: 9999px; pointer-events: none; animation: gpPulse 1.9s ease-out infinite; }
@@ -50,14 +50,16 @@ const ALIGARH_CENTER: [number, number] = [27.8974, 78.088];
 // whole map when zoomed out (revealed once you zoom into the city).
 const MARKER_ZOOM = 11;
 
-// A pulse-only divIcon (no pin) drawn behind the blue marker for a LIVE gym. The
-// ring radius scales with the gym's calories vs the city leader, capped, so a
-// busy gym blinks bigger — the "calorie" cue — without ever covering the map.
+// A pulse-only divIcon (no pin) drawn behind the blue marker. The ring radius
+// scales with the gym's calories vs the city leader, capped, so a busy gym
+// blinks bigger — the "calorie" cue — without ever covering the map. Gyms that
+// are LIVE right now (or the city leader) glow orange; the rest glow purple.
 const buildPulseIcon = (entry: GymLeaderboardEntry, topScore: number) => {
   const base = entry.rank === 1 ? 34 : 28;
   const intensity = topScore > 0 ? entry.vibe_points / topScore : 0;
-  const pulse = Math.round(base + 12 + Math.min(60, entry.vibe_points / 25) + intensity * 14);
-  const glow = entry.rank === 1 ? "rgba(249, 115, 22, 0.34)" : "rgba(124, 58, 237, 0.3)";
+  const pulse = Math.round(base + 20 + Math.min(60, entry.vibe_points / 25) + intensity * 14);
+  const glow =
+    entry.is_active || entry.rank === 1 ? "rgba(249, 115, 22, 0.4)" : "rgba(124, 58, 237, 0.36)";
   const ring = (cls: string) =>
     `<span class="${cls}" style="width:${pulse}px;height:${pulse}px;background:${glow};"></span>`;
 
@@ -156,15 +158,14 @@ const CityLeaderboardMap = ({ entries }: { entries: GymLeaderboardEntry[] }) => 
         {showMarkers &&
           located.map((gym) => (
             <Fragment key={gym.gym_id}>
-              {/* Calorie "blink" ring behind the pin, only while the gym is live. */}
-              {gym.is_active && (
-                <Marker
-                  position={[gym.latitude as number, gym.longitude as number]}
-                  icon={buildPulseIcon(gym, topScore)}
-                  interactive={false}
-                  zIndexOffset={-1000}
-                />
-              )}
+              {/* Calorie "blink" ring behind the pin — always shown so the map
+                  feels alive; orange when the gym is live, sized by calories. */}
+              <Marker
+                position={[gym.latitude as number, gym.longitude as number]}
+                icon={buildPulseIcon(gym, topScore)}
+                interactive={false}
+                zIndexOffset={-1000}
+              />
               <Marker
                 position={[gym.latitude as number, gym.longitude as number]}
                 icon={defaultIcon}
