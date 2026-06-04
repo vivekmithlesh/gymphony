@@ -17,7 +17,7 @@ function AnimatedNumber({ value }: { value: number }) {
 import {
   CalendarCheck2, CheckCircle2, CircleDashed, Dumbbell, Flame, LogOut, LayoutDashboard,
   Sparkles, Trophy, QrCode, Loader2, Zap, Search, Map as MapIcon, MapPin, Activity,
-  CreditCard, Package, ShoppingBag, ChevronRight, TrendingUp, Clock, User, Settings, Bell, Building2,
+  CreditCard, Package, ShoppingBag, ChevronRight, TrendingUp, Clock, Settings, Bell, Building2, Menu,
   Star, Phone, ArrowUpRight, Camera, X, Scan, Maximize2, ShieldCheck
 } from "lucide-react";
 import { toast } from "sonner";
@@ -129,6 +129,7 @@ export default function MemberDashboard() {
   const [isUpdatingMobile, setIsUpdatingMobile] = useState(false);
   const [isUpdatingName, setIsUpdatingName] = useState(false);
   const [activeTab, setActiveTab] = useState("dashboard");
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const calculateNextSession = useCallback((gymOpeningTime?: string) => {
     if (gymOpeningTime) {
@@ -663,26 +664,68 @@ export default function MemberDashboard() {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="rounded-full">
-                <Settings className="w-5 h-5" />
+          {/* Hamburger → vertical nav drawer (replaces the horizontal scroll tabs) */}
+          <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon" className="rounded-full" aria-label="Open menu">
+                <Menu className="w-5 h-5" />
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>My Account</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => setActiveTab('settings')}>
-                <User className="w-4 h-4 mr-2" />
-                <span>Profile Settings</span>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleLogout}>
-                <LogOut className="w-4 h-4 mr-2" />
-                <span>Log out</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-72 border-white/10 bg-slate-950 p-6 text-white">
+              <SheetHeader className="mb-8 px-2 text-left">
+                <SheetTitle className="flex items-center gap-2 text-white">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-brand">
+                    <span className="text-xs font-bold text-white">G</span>
+                  </div>
+                  Gymphony
+                </SheetTitle>
+              </SheetHeader>
+
+              <nav className="space-y-2">
+                {tabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => {
+                      setActiveTab(tab.id);
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 transition-all ${
+                      activeTab === tab.id
+                        ? "bg-primary/10 text-primary font-medium"
+                        : "text-muted-foreground hover:bg-white/5"
+                    }`}
+                  >
+                    <tab.icon className="h-5 w-5" />
+                    <span className="text-sm">{tab.label}</span>
+                  </button>
+                ))}
+                <button
+                  onClick={() => {
+                    setActiveTab("settings");
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 transition-all ${
+                    activeTab === "settings"
+                      ? "bg-primary/10 text-primary font-medium"
+                      : "text-muted-foreground hover:bg-white/5"
+                  }`}
+                >
+                  <Settings className="h-5 w-5" />
+                  <span className="text-sm">Settings</span>
+                </button>
+              </nav>
+
+              <div className="mt-6 border-t border-white/10 pt-6">
+                <button
+                  onClick={handleLogout}
+                  className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-muted-foreground transition-colors hover:bg-red-400/10 hover:text-red-400"
+                >
+                  <LogOut className="h-5 w-5" />
+                  <span className="text-sm">Logout</span>
+                </button>
+              </div>
+            </SheetContent>
+          </Sheet>
         </div>
       </header>
 
@@ -735,23 +778,6 @@ export default function MemberDashboard() {
           </div>
         ) : (
           <>
-            <div className="no-scrollbar -mx-4 mb-6 flex gap-2 overflow-x-auto px-4 md:mx-0 md:px-0">
-              {tabs.map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold whitespace-nowrap transition-all ${
-                    activeTab === tab.id
-                      ? 'bg-gradient-brand text-white shadow-glow'
-                      : 'border border-white/10 bg-white/5 text-muted-foreground hover:text-foreground hover:border-primary/30'
-                  }`}
-                >
-                  <tab.icon className="w-4 h-4" />
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeTab}
