@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef, lazy, Suspense } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { motion, AnimatePresence, useSpring, useTransform, useMotionValue, animate } from "framer-motion";
 
 function AnimatedNumber({ value }: { value: number }) {
@@ -18,7 +18,7 @@ import {
   CalendarCheck2, CheckCircle2, CircleDashed, Dumbbell, Flame, LogOut, LayoutDashboard,
   Sparkles, Trophy, QrCode, Loader2, Zap, Search, Map as MapIcon, MapPin, Activity,
   CreditCard, Package, ShoppingBag, ChevronRight, TrendingUp, Clock, Settings, Bell, Building2, Menu,
-  Star, Phone, ArrowUpRight, Camera, X, Scan, Maximize2, ShieldCheck
+  Star, Phone, ArrowUpRight, Camera, X, Scan, Maximize2, ShieldCheck, Plus
 } from "lucide-react";
 import { toast } from "sonner";
 import { Html5QrcodeScanner } from "html5-qrcode";
@@ -51,9 +51,12 @@ import { useRealtimeLeaderboard } from "@/hooks/useRealtimeLeaderboard";
 import { MemberUpiCheckout } from "@/components/MemberUpiCheckout";
 import { LegalLinksFooter } from "@/components/LegalLinksFooter";
 import { MemberAttendanceTab } from "@/components/MemberAttendanceTab";
+import { MembershipGate } from "@/components/MembershipGate";
+import { MemberJoinScanner } from "@/components/MemberJoinScanner";
 import { MemberGymStore } from "@/components/MemberGymStore";
 import { MemberNotesTab } from "@/components/MemberNotesTab";
 import { MemberGoalsCard } from "@/components/MemberGoalsCard";
+import { PremiumLoader } from "@/components/PremiumLoader";
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -112,6 +115,10 @@ export default function MemberDashboard() {
   const [nextSession, setNextSession] = useState("06:30 PM");
   const [selectedActivity, setSelectedActivity] = useState(activityOptions[0]);
   const [durationMinutes, setDurationMinutes] = useState("30");
+  // A session can hold several workouts; each gets its own workout_logs row on Finish.
+  const [sessionItems, setSessionItems] = useState<{ activity: string; duration: number }[]>([]);
+  // True once today's single allowed session has been logged — locks Finish for the day.
+  const [sessionLoggedToday, setSessionLoggedToday] = useState(false);
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<GymSearchResult[]>([]);
@@ -330,6 +337,20 @@ export default function MemberDashboard() {
     } catch (err) { console.error("Error in fetchTodayCheckin:", err); }
   }, []);
 
+  // Has the member already used today's one allowed session? Drives the Finish lock.
+  const fetchTodaySession = useCallback(async (memberId: string) => {
+    const now = new Date();
+    const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    try {
+      const { data, error } = await supabase.from("workout_sessions").select("id")
+        .eq("member_id", memberId)
+        .eq("session_date", localDate)
+        .limit(1);
+      if (error) return;
+      setSessionLoggedToday((data || []).length > 0);
+    } catch (err) { console.error("Error in fetchTodaySession:", err); }
+  }, []);
+
   const fetchGymPlans = useCallback(async (gymId: string) => {
     try {
       const { data: plansData, error: plansError } = await supabase.from("gym_plans").select("*").eq("gym_id", gymId);
@@ -373,6 +394,26 @@ export default function MemberDashboard() {
     ]);
   }, [fetchGymPlans, fetchGymStats, fetchTodayCalories, fetchTotalGymCalories, fetchInventory, resolveGymInfo, calculateNextSession]);
 
+  // Re-read membership status after activation (owner approval or mock online
+  // payment) so the MembershipGate lifts without a full page reload.
+  const refreshMembershipStatus = useCallback(async (memberId: string) => {
+    const { data } = await supabase
+      .from("profiles")
+      .select("status, membership_plan, subscription_end_date, gym_id")
+      .eq("id", memberId)
+      .maybeSingle();
+    if (!data) return;
+    setMember((prev) => prev ? ({
+      ...prev,
+      status: data.status ?? prev.status,
+      subscription_status: data.status ?? prev.subscription_status,
+      membership_plan: data.membership_plan ?? prev.membership_plan,
+      subscription_end_date: data.subscription_end_date ?? prev.subscription_end_date,
+      gym_id: data.gym_id ?? prev.gym_id,
+    }) : prev);
+    if (data.gym_id) await refreshGymContext(data.gym_id, memberId);
+  }, [refreshGymContext]);
+
   useEffect(() => {
     const loadMember = async () => {
       try {
@@ -392,7 +433,8 @@ export default function MemberDashboard() {
           id: user.id, email: profileData?.email || user.email || "", full_name: profileData?.full_name || memberData?.member_name || "Member",
           gym_id: resolvedGymId, short_id: profileData?.short_id || null, membership_plan: profileData?.membership_plan || memberData?.membership_plan || "Active Member",
           subscription_status: profileData?.status || profileData?.subscription_status || "Inactive", status: profileData?.status || "Inactive",
-          whatsapp_number: profileData?.whatsapp_number, mobile_number: resolvedMobile, avatar_url: profileData?.avatar_url, subscription_end_date: profileData?.subscription_end_date
+          whatsapp_number: profileData?.whatsapp_number, mobile_number: resolvedMobile, avatar_url: profileData?.avatar_url, subscription_end_date: profileData?.subscription_end_date,
+          joined_at: profileData?.created_at || memberData?.joining_date
         };
 
         setMember(mergedMember);
@@ -404,7 +446,7 @@ export default function MemberDashboard() {
           setShowMobilePrompt(true);
         }
 
-        await Promise.all([fetchTodayCalories(user.id), fetchNotifications(user.id), fetchTodayCheckin(user.id)]);
+        await Promise.all([fetchTodayCalories(user.id), fetchNotifications(user.id), fetchTodayCheckin(user.id), fetchTodaySession(user.id)]);
         if (resolvedGymId) await refreshGymContext(resolvedGymId, user.id);
       } catch (error) {
         console.error("Dashboard loading error:", error);
@@ -441,6 +483,7 @@ export default function MemberDashboard() {
 
     const refreshWorkouts = () => {
       fetchTodayCalories(memberId);
+      fetchTodaySession(memberId);
       if (gymId) fetchTotalGymCalories(gymId);
     };
 
@@ -466,7 +509,18 @@ export default function MemberDashboard() {
 
     channel.subscribe((status) => { if (status === "SUBSCRIBED") setIsRealtimeConnected(true); });
     return () => { supabase.removeChannel(channel); };
-  }, [member?.id, member?.gym_id, gymInfo?.id, fetchTodayCalories, fetchTotalGymCalories, fetchNotifications, fetchTodayCheckin]);
+  }, [member?.id, member?.gym_id, gymInfo?.id, fetchTodayCalories, fetchTotalGymCalories, fetchNotifications, fetchTodayCheckin, fetchTodaySession]);
+
+  // Stage the current activity + duration into the session list (does not save yet).
+  const handleAddWorkout = () => {
+    const parsedDuration = Number(durationMinutes);
+    if (isNaN(parsedDuration) || parsedDuration <= 0) {
+      toast.error("Please enter a valid duration");
+      return;
+    }
+    setSessionItems(prev => [...prev, { activity: selectedActivity, duration: parsedDuration }]);
+    setDurationMinutes("30");
+  };
 
   const handleFinishSession = async () => {
     const { data: profile } = await supabase.from("profiles").select("gym_id").eq("id", member?.id).maybeSingle();
@@ -477,43 +531,55 @@ export default function MemberDashboard() {
       return;
     }
 
-    const parsedDuration = Number(durationMinutes);
-    if (isNaN(parsedDuration) || parsedDuration <= 0) {
-      toast.error("Please enter a valid duration");
-      return;
+    // Use the staged list. If nothing was added but the form holds a valid entry,
+    // treat that as a single workout so the one-shot flow still works.
+    let items = sessionItems;
+    if (items.length === 0) {
+      const parsedDuration = Number(durationMinutes);
+      if (isNaN(parsedDuration) || parsedDuration <= 0) {
+        toast.error("Add at least one workout");
+        return;
+      }
+      items = [{ activity: selectedActivity, duration: parsedDuration }];
     }
 
-    const caloriesEarned = estimateCalories(selectedActivity, parsedDuration);
+    // Local-day boundaries, computed the same way fetchTodayCheckin does, so the
+    // server can verify presence + enforce the once-per-day cap in the member's
+    // own timezone (never the DB's UTC date).
+    const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+    const localDate = `${startOfDay.getFullYear()}-${String(startOfDay.getMonth() + 1).padStart(2, "0")}-${String(startOfDay.getDate()).padStart(2, "0")}`;
 
     try {
-      // 1. Insert Workout Log
-      const { error } = await supabase.from("workout_logs").insert([{
-        user_id: member.id,
-        gym_id: currentGymId,
-        activity_type: selectedActivity,
-        duration_minutes: parsedDuration,
-        calories_burned: caloriesEarned,
-        created_at: new Date().toISOString(),
-      }]);
+      // Everything that earns points is enforced server-side: auth, presence
+      // (checked-in today), once-per-day, and the real calorie math. The client
+      // can no longer write workout_logs or vibe_points directly.
+      const { data, error } = await supabase.rpc("log_workout_session", {
+        p_member_id: member.id,
+        p_gym_id: currentGymId,
+        p_items: items.map(item => ({ activity: item.activity, duration_minutes: item.duration })),
+        p_local_date: localDate,
+        p_day_start: startOfDay.toISOString(),
+      });
 
       if (error) throw error;
 
-      // 2. ✅ REAL-TIME POINTS UPDATE (Updating Gym Profiles)
-      const { data: gymProfile } = await supabase
-        .from("gym_profiles")
-        .select("vibe_points")
-        .eq("id", currentGymId)
-        .maybeSingle();
+      const result = data as { success: boolean; error?: string; message?: string; workout_count?: number; total_calories?: number };
 
-      const currentPoints = gymProfile?.vibe_points || 0;
-      const newPoints = currentPoints + caloriesEarned;
-
-      await supabase
-        .from("gym_profiles")
-        .update({ vibe_points: newPoints })
-        .eq("id", currentGymId);
+      if (!result?.success) {
+        if (result?.error === "already_logged") {
+          setSessionLoggedToday(true);
+          setSessionItems([]);
+        }
+        toast.error(
+          result?.error === "not_checked_in" ? "Check in first" :
+          result?.error === "already_logged" ? "Already logged today" : "Could not save session",
+          { description: result?.message || "Try again." }
+        );
+        return;
+      }
 
       setShowSuccessAnimation(true);
+      setSessionLoggedToday(true);
 
       await Promise.all([
         fetchTodayCalories(member.id),
@@ -521,10 +587,12 @@ export default function MemberDashboard() {
         fetchTotalGymCalories(currentGymId)
       ]);
 
+      const count = result.workout_count ?? items.length;
       toast.success("Workout Logged! 🦾", {
-        description: `Session logged! +${caloriesEarned} cal. Your leaderboard score has been updated.`
+        description: `${count} workout${count > 1 ? "s" : ""} logged! +${result.total_calories ?? 0} cal. Your leaderboard score has been updated.`
       });
 
+      setSessionItems([]);
       setDurationMinutes("30");
       setTimeout(() => setShowSuccessAnimation(false), 3000);
 
@@ -569,20 +637,86 @@ export default function MemberDashboard() {
     navigate({ to: "/login" });
   };
 
-  const tabs = [
+  // Member navigation — same shape/order convention as the Owner Dashboard's
+  // sidebar (DashboardLayout). Settings lives at the tail just like the owner's.
+  const navItems = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "leaderboard", label: "Leaderboard", icon: Trophy },
     { id: "explorer", label: "Explorer", icon: MapIcon },
     { id: "attendance", label: "Attendance", icon: CalendarCheck2 },
     { id: "store", label: "Store", icon: ShoppingBag },
     { id: "notes", label: "Notes", icon: Dumbbell },
+    { id: "settings", label: "Settings", icon: Settings },
   ];
+
+  // Single nav renderer shared by the permanent desktop rail and the mobile
+  // drawer — identical active-capsule styling to the Owner Dashboard.
+  const renderNav = (mobile: boolean) => (
+    <nav className={mobile ? "space-y-2" : "grow px-4 space-y-2"}>
+      {navItems.map((item) => (
+        <button
+          key={item.id}
+          onClick={() => {
+            setActiveTab(item.id);
+            if (mobile) setIsMobileMenuOpen(false);
+          }}
+          className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 transition-all ${
+            activeTab === item.id
+              ? "bg-primary/10 text-primary font-medium"
+              : "text-muted-foreground hover:bg-white/5"
+          }`}
+        >
+          <item.icon className="h-5 w-5" />
+          <span className="text-sm">{item.label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+
+  // Notifications bell — shared between the desktop header and mobile header,
+  // styled like the Owner Dashboard's header action buttons.
+  const notificationsBell = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="outline"
+          size="icon"
+          className="relative rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition-all hover:border-primary/30 hover:bg-primary/5 hover:text-primary"
+        >
+          <Bell className="w-5 h-5" />
+          {unreadNotifications > 0 && (
+            <span className="absolute top-0 right-0 flex h-2 w-2">
+              <span className="absolute inline-flex w-full h-full bg-red-400 rounded-full opacity-75 animate-ping"></span>
+              <span className="relative inline-flex w-2 h-2 bg-red-500 rounded-full"></span>
+            </span>
+          )}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-80">
+        <DropdownMenuLabel>Notifications</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {notifications.length > 0 ? (
+          notifications.map(n => (
+            <DropdownMenuItem key={n.id} onSelect={(e) => e.preventDefault()} onClick={markNotificationsAsRead}>
+              <div className="flex flex-col">
+                <span className="font-medium">{n.activity_type}</span>
+                <span className="text-xs text-gray-500">{n.description}</span>
+              </div>
+            </DropdownMenuItem>
+          ))
+        ) : (
+          <div className="p-4 text-sm text-center text-gray-500">No new notifications</div>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-50">
-        <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
-      </div>
+      <PremiumLoader
+        title="Loading Dashboard"
+        subtext="Fetching your gym, workouts and stats…"
+      />
     );
   }
 
@@ -595,8 +729,31 @@ export default function MemberDashboard() {
     );
   }
 
+  // Membership gate: a member who has joined a gym (gym_id set) but isn't Active
+  // sees the unified checkout + "waiting for approval" lock. It auto-unlocks the
+  // instant the owner approves (or a mock online payment activates). Members with
+  // no gym fall through to the "Join a Gym" screen below; active members skip it.
+  if (member.gym_id && (member.status ?? "").toLowerCase() !== "active") {
+    return (
+      <MembershipGate
+        memberId={member.id}
+        gym={{
+          id: gymInfo?.id || member.gym_id,
+          gym_name: gymInfo?.gym_name,
+          gym_owner_id: gymInfo?.gym_owner_id,
+          upi_id: gymInfo?.upi_id,
+          terms_url: gymInfo?.terms_url,
+          privacy_url: gymInfo?.privacy_url,
+          refund_url: gymInfo?.refund_url,
+        }}
+        plans={gymPlans}
+        onActivated={() => refreshMembershipStatus(member.id)}
+      />
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-background text-foreground font-sans">
+    <div className="flex w-full min-h-screen overflow-hidden bg-background text-foreground font-sans">
       <AnimatePresence>
         {showSuccessAnimation && (
           <motion.div
@@ -612,124 +769,118 @@ export default function MemberDashboard() {
         )}
       </AnimatePresence>
 
-      <header className="sticky top-0 z-30 flex items-center justify-between h-16 px-4 md:px-10 bg-background/70 backdrop-blur-xl border-b border-white/10">
-        <div className="flex items-center gap-3">
-          <Avatar>
-            <AvatarImage src={member.avatar_url || undefined} alt={member.full_name || "Member"} />
-            <AvatarFallback className="bg-gradient-brand text-white font-bold">{firstName.charAt(0)}</AvatarFallback>
-          </Avatar>
-          <div>
-            <h1 className="text-lg font-semibold leading-tight tracking-tight">Hi, {firstName}!</h1>
-            <p className="text-xs text-muted-foreground">
-              {gymInfo?.gym_name ? (
-                <span className="inline-flex items-center gap-1">
-                  <Building2 className="h-3 w-3 text-indigo-500" />{gymInfo.gym_name}
-                </span>
-              ) : membershipName}
-            </p>
+      {/* Permanent desktop sidebar — mirrors the Owner Dashboard rail exactly:
+          same width, glass background, branding and active-capsule styling. */}
+      <aside className="hidden lg:flex w-64 flex-col border-r border-white/10 bg-white/5 backdrop-blur-xl z-20">
+        <Link to="/" className="p-8 group">
+          <div className="flex items-center gap-2">
+            <div className="h-8 w-8 rounded-lg bg-gradient-brand flex items-center justify-center transition-transform group-hover:scale-110">
+              <span className="font-bold text-white">G</span>
+            </div>
+            <span className="font-display text-xl font-bold tracking-tight">Gymphony</span>
           </div>
-          <Badge variant={isRealtimeConnected ? "default" : "destructive"} className="ml-2 hidden items-center gap-1.5 sm:flex">
-            <div className={`w-2 h-2 rounded-full ${isRealtimeConnected ? 'bg-green-400' : 'bg-red-400'}`}></div>
-            {isRealtimeConnected ? "Live" : "Offline"}
-          </Badge>
+        </Link>
+
+        {renderNav(false)}
+
+        <div className="p-6 mt-auto">
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-colors"
+          >
+            <LogOut className="h-5 w-5" />
+            Logout
+          </button>
         </div>
-        <div className="flex items-center gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="relative rounded-full">
-                <Bell className="w-5 h-5" />
-                {unreadNotifications > 0 && (
-                  <span className="absolute top-0 right-0 flex h-2 w-2">
-                    <span className="absolute inline-flex w-full h-full bg-red-400 rounded-full opacity-75 animate-ping"></span>
-                    <span className="relative inline-flex w-2 h-2 bg-red-500 rounded-full"></span>
+      </aside>
+
+      <main className="grow relative isolate overflow-y-auto px-6 py-8 md:px-10 lg:py-12">
+        {/* Background gradients — same blended purple glow as the Owner Dashboard.
+            Blurred orbs sit behind content (-z-10) over the near-white bg-background. */}
+        <div className="glow-orb top-0 right-0 -z-10 h-96 w-96 bg-primary-glow opacity-20" />
+        <div className="glow-orb bottom-0 left-1/4 -z-10 h-80 w-80 bg-primary opacity-10" />
+
+        {/* Mobile header — branding + bell + hamburger drawer. Hidden on desktop;
+            the hamburger lives ONLY here so it never appears beside the rail. */}
+        <div className="lg:hidden flex items-center justify-between mb-8">
+          <div className="flex min-w-0 items-center gap-3">
+            <Avatar>
+              <AvatarImage src={member.avatar_url || undefined} alt={member.full_name || "Member"} />
+              <AvatarFallback className="bg-gradient-brand text-white font-bold">{firstName.charAt(0)}</AvatarFallback>
+            </Avatar>
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-semibold leading-tight tracking-tight">Hi, {firstName}!</h1>
+              <p className="truncate text-xs text-muted-foreground">
+                {gymInfo?.gym_name ? (
+                  <span className="inline-flex items-center gap-1">
+                    <Building2 className="h-3 w-3 text-indigo-500" />{gymInfo.gym_name}
                   </span>
-                )}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-80">
-              <DropdownMenuLabel>Notifications</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {notifications.length > 0 ? (
-                notifications.map(n => (
-                  <DropdownMenuItem key={n.id} onSelect={(e) => e.preventDefault()} onClick={markNotificationsAsRead}>
-                    <div className="flex flex-col">
-                      <span className="font-medium">{n.activity_type}</span>
-                      <span className="text-xs text-gray-500">{n.description}</span>
+                ) : membershipName}
+              </p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {notificationsBell}
+            <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
+              <SheetTrigger asChild>
+                <Button variant="outline" size="icon" className="rounded-xl border-white/10 bg-white/5" aria-label="Open menu">
+                  <Menu className="h-5 w-5" />
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="left" className="w-72 border-white/10 bg-slate-950 p-6 text-white">
+                <SheetHeader className="mb-8 px-2 text-left">
+                  <SheetTitle className="flex items-center gap-2 text-white">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-brand">
+                      <span className="text-xs font-bold text-white">G</span>
                     </div>
-                  </DropdownMenuItem>
-                ))
-              ) : (
-                <div className="p-4 text-sm text-center text-gray-500">No new notifications</div>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+                    Gymphony
+                  </SheetTitle>
+                </SheetHeader>
 
-          {/* Hamburger → vertical nav drawer (replaces the horizontal scroll tabs) */}
-          <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
-            <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="rounded-full" aria-label="Open menu">
-                <Menu className="w-5 h-5" />
-              </Button>
-            </SheetTrigger>
-            <SheetContent side="left" className="w-72 border-white/10 bg-slate-950 p-6 text-white">
-              <SheetHeader className="mb-8 px-2 text-left">
-                <SheetTitle className="flex items-center gap-2 text-white">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-brand">
-                    <span className="text-xs font-bold text-white">G</span>
-                  </div>
-                  Gymphony
-                </SheetTitle>
-              </SheetHeader>
+                {renderNav(true)}
 
-              <nav className="space-y-2">
-                {tabs.map((tab) => (
+                <div className="mt-6 border-t border-white/10 pt-6">
                   <button
-                    key={tab.id}
-                    onClick={() => {
-                      setActiveTab(tab.id);
-                      setIsMobileMenuOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 transition-all ${
-                      activeTab === tab.id
-                        ? "bg-primary/10 text-primary font-medium"
-                        : "text-muted-foreground hover:bg-white/5"
-                    }`}
+                    onClick={handleLogout}
+                    className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-muted-foreground transition-colors hover:bg-red-400/10 hover:text-red-400"
                   >
-                    <tab.icon className="h-5 w-5" />
-                    <span className="text-sm">{tab.label}</span>
+                    <LogOut className="h-5 w-5" />
+                    <span className="text-sm">Logout</span>
                   </button>
-                ))}
-                <button
-                  onClick={() => {
-                    setActiveTab("settings");
-                    setIsMobileMenuOpen(false);
-                  }}
-                  className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 transition-all ${
-                    activeTab === "settings"
-                      ? "bg-primary/10 text-primary font-medium"
-                      : "text-muted-foreground hover:bg-white/5"
-                  }`}
-                >
-                  <Settings className="h-5 w-5" />
-                  <span className="text-sm">Settings</span>
-                </button>
-              </nav>
-
-              <div className="mt-6 border-t border-white/10 pt-6">
-                <button
-                  onClick={handleLogout}
-                  className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-muted-foreground transition-colors hover:bg-red-400/10 hover:text-red-400"
-                >
-                  <LogOut className="h-5 w-5" />
-                  <span className="text-sm">Logout</span>
-                </button>
-              </div>
-            </SheetContent>
-          </Sheet>
+                </div>
+              </SheetContent>
+            </Sheet>
+          </div>
         </div>
-      </header>
 
-      <main className="px-4 py-6 md:px-10 lg:py-8">
+        {/* Desktop header — greeting + gym + Live badge on the left, bell on the
+            right. Lives inside <main>, exactly like the Owner Dashboard header. */}
+        <div className="hidden lg:flex items-center justify-between mb-12 z-20 relative">
+          <div className="flex items-center gap-3">
+            <Avatar className="h-12 w-12">
+              <AvatarImage src={member.avatar_url || undefined} alt={member.full_name || "Member"} />
+              <AvatarFallback className="bg-gradient-brand text-white font-bold">{firstName.charAt(0)}</AvatarFallback>
+            </Avatar>
+            <div>
+              <h1 className="font-display text-4xl font-bold tracking-tight">Hi, {firstName}!</h1>
+              <p className="mt-2 flex items-center gap-2 font-medium text-muted-foreground">
+                {gymInfo?.gym_name ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Building2 className="h-4 w-4 text-primary" />{gymInfo.gym_name}
+                  </span>
+                ) : membershipName}
+                <Badge variant={isRealtimeConnected ? "default" : "destructive"} className="ml-1 inline-flex items-center gap-1.5">
+                  <div className={`w-2 h-2 rounded-full ${isRealtimeConnected ? 'bg-green-400' : 'bg-red-400'}`}></div>
+                  {isRealtimeConnected ? "Live" : "Offline"}
+                </Badge>
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            {notificationsBell}
+          </div>
+        </div>
+
         {!member.gym_id ? (
           <div className="max-w-2xl mx-auto text-center">
             <motion.div initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}>
@@ -750,6 +901,14 @@ export default function MemberDashboard() {
                       className="w-full pl-10 border-white/10 bg-white/5 backdrop-blur-xl"
                     />
                     {isSearching && <Loader2 className="absolute w-5 h-5 text-muted-foreground right-3 top-1/2 -translate-y-1/2 animate-spin" />}
+                  </div>
+                  <div className="mx-auto mt-4 flex max-w-md items-center gap-3">
+                    <div className="h-px flex-1 bg-white/10" />
+                    <span className="text-xs text-muted-foreground">or scan the gym's Join QR</span>
+                    <div className="h-px flex-1 bg-white/10" />
+                  </div>
+                  <div className="mt-4 flex justify-center">
+                    <MemberJoinScanner onJoined={handleJoinGym} isJoining={isSavingGymId} />
                   </div>
                   {searchResults.length > 0 && (
                     <div className="mt-4 space-y-2 text-left">
@@ -787,8 +946,8 @@ export default function MemberDashboard() {
                 transition={{ duration: 0.2 }}
               >
                 {activeTab === 'dashboard' && (
-                  <div className="space-y-6">
-                  <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+                  <div className="space-y-8">
+                  <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
                     <div className="space-y-6 lg:col-span-2">
                       {gymInfo && (
                         <Card className="relative overflow-hidden border-white/10 bg-gradient-brand-soft backdrop-blur-xl">
@@ -883,30 +1042,73 @@ export default function MemberDashboard() {
                             Log a Workout
                           </CardTitle>
                         </CardHeader>
-                        <CardContent className="flex flex-col gap-4 md:flex-row">
-                          <div className="flex-1">
-                            <Label htmlFor="activity">Activity</Label>
-                            <Select value={selectedActivity} onValueChange={setSelectedActivity}>
-                              <SelectTrigger id="activity" className="border-white/10 bg-white/5 backdrop-blur-xl">
-                                <SelectValue placeholder="Select activity" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {activityOptions.map(opt => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
-                              </SelectContent>
-                            </Select>
+                        <CardContent className="flex flex-col gap-4">
+                          <div className="flex flex-col gap-4 md:flex-row md:items-end">
+                            <div className="flex-1">
+                              <Label htmlFor="activity">Activity</Label>
+                              <Select value={selectedActivity} onValueChange={setSelectedActivity}>
+                                <SelectTrigger id="activity" className="border-white/10 bg-white/5 backdrop-blur-xl">
+                                  <SelectValue placeholder="Select activity" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {activityOptions.map(opt => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="flex-1">
+                              <Label htmlFor="duration">Duration (minutes)</Label>
+                              <Input id="duration" type="number" value={durationMinutes} onChange={e => setDurationMinutes(e.target.value)} className="border-white/10 bg-white/5 backdrop-blur-xl" />
+                            </div>
+                            <Button variant="outline" onClick={handleAddWorkout} disabled={!checkedInToday || sessionLoggedToday} className="w-full rounded-xl border-white/10 bg-white/5 hover:bg-white/10 transition-all md:w-auto disabled:opacity-50">
+                              <Plus className="w-4 h-4 mr-2" />
+                              Add Workout
+                            </Button>
                           </div>
-                          <div className="flex-1">
-                            <Label htmlFor="duration">Duration (minutes)</Label>
-                            <Input id="duration" type="number" value={durationMinutes} onChange={e => setDurationMinutes(e.target.value)} className="border-white/10 bg-white/5 backdrop-blur-xl" />
-                          </div>
-                          <Button onClick={handleFinishSession} className="self-end w-full rounded-xl bg-gradient-brand text-white shadow-glow hover:shadow-primary/40 transition-all md:w-auto">
+
+                          {sessionItems.length > 0 && (
+                            <div className="flex flex-col gap-2">
+                              {sessionItems.map((item, i) => (
+                                <div key={i} className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                                    <Dumbbell className="w-4 h-4 text-primary" />
+                                    <span className="font-medium">{item.activity}</span>
+                                    <span className="text-muted-foreground">· {item.duration} min</span>
+                                    <span className="flex items-center gap-1 text-muted-foreground">
+                                      <Flame className="w-3.5 h-3.5" /> ~{estimateCalories(item.activity, item.duration)} cal
+                                    </span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSessionItems(prev => prev.filter((_, idx) => idx !== i))}
+                                    className="text-muted-foreground transition-colors hover:text-white"
+                                    aria-label={`Remove ${item.activity}`}
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          <Button onClick={handleFinishSession} disabled={!checkedInToday || sessionLoggedToday} className="w-full rounded-xl bg-gradient-brand text-white shadow-glow hover:shadow-primary/40 transition-all md:w-auto md:self-end disabled:opacity-50 disabled:shadow-none">
                             <CheckCircle2 className="w-4 h-4 mr-2" />
-                            Finish Session
+                            {sessionLoggedToday ? "Logged for today ✓" : `Finish Session${sessionItems.length > 0 ? ` (${sessionItems.length})` : ""}`}
                           </Button>
+
+                          {/* Integrity gate: points are real — earn them at the gym, once a day. */}
+                          {sessionLoggedToday ? (
+                            <p className="flex items-center gap-1.5 text-xs text-emerald-500">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Session logged for today. Come back tomorrow!
+                            </p>
+                          ) : !checkedInToday ? (
+                            <p className="flex items-center gap-1.5 text-xs text-amber-500">
+                              <QrCode className="w-3.5 h-3.5" /> Check in at the gym (scan the wall QR) to log a workout.
+                            </p>
+                          ) : null}
                         </CardContent>
                       </Card>
 
-                      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                      <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:items-stretch">
                         <MemberGoalsCard memberId={member.id} category="diet" title="Diet Goals" />
                         <MemberGoalsCard memberId={member.id} category="exercise" title="Exercise Goals" />
                       </div>
@@ -919,7 +1121,7 @@ export default function MemberDashboard() {
                   </div>
 
                   {/* Subscription + AI Assistant — full-width row, side-by-side on desktop, stacked on mobile */}
-                  <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-8 lg:grid-cols-2 lg:items-stretch">
                     <MemberActivePlans memberId={member.id} />
                     <MemberAIChat
                       gymId={gymInfo?.id ?? member.gym_id ?? null}
@@ -935,7 +1137,7 @@ export default function MemberDashboard() {
                   <CityLeaderboard />
                 )}
                 {activeTab === 'explorer' && (
-                  <Suspense fallback={<div className="flex items-center justify-center py-24"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>}>
+                  <Suspense fallback={<PremiumLoader fullScreen={false} title="Loading Map" subtext="Plotting nearby gyms across your city…" />}>
                     <CityGymExplorer
                       onJoinGym={handleJoinGym}
                       currentUserId={member.id}
@@ -970,6 +1172,15 @@ export default function MemberDashboard() {
             </AnimatePresence>
           </>
         )}
+
+        {/* Legal & compliance footer (owner sets these in Settings → Gym Profile).
+            Lives inside <main> so it scrolls with content, not beside the rail. */}
+        <LegalLinksFooter
+          termsUrl={gymInfo?.terms_url}
+          privacyUrl={gymInfo?.privacy_url}
+          refundUrl={gymInfo?.refund_url}
+          className="mt-12 border-t border-white/10 pt-8"
+        />
       </main>
 
       <Dialog open={showMobilePrompt} onOpenChange={setShowMobilePrompt}>
@@ -1049,14 +1260,6 @@ export default function MemberDashboard() {
           onSubmitted={() => member.gym_id && refreshGymContext(member.gym_id, member.id)}
         />
       )}
-
-      {/* Legal & compliance footer (owner sets these in Settings → Gym Profile). */}
-      <LegalLinksFooter
-        termsUrl={gymInfo?.terms_url}
-        privacyUrl={gymInfo?.privacy_url}
-        refundUrl={gymInfo?.refund_url}
-        className="px-6 py-8"
-      />
     </div>
   );
 }

@@ -46,6 +46,7 @@ import { supabase } from "@/supabase";
 import { initiatePhonePePayment, finalizeUpgrade } from "@/lib/phonepe";
 import { hasAccess } from "@/lib/permissions";
 import { WallQRTab } from "@/components/WallQRTab";
+import { GymJoinQRCode } from "@/components/GymJoinQRCode";
 import { TimePicker } from "@/components/TimePicker";
 // NOTE: do NOT statically import "@/lib/leafletDefaultIcon" here — it pulls in
 // `leaflet`, which touches `window` at module load and crashes SSR for every
@@ -88,6 +89,7 @@ type GymSettings = {
   latitude: number | null;
   longitude: number | null;
   checkin_radius_m: number;
+  allow_mock_payments: boolean;
   opening_time: string;
   closing_time: string;
   description: string;
@@ -150,6 +152,7 @@ const buildDefaultSettings = (userId: string, email: string): Omit<GymSettings, 
   latitude: null,
   longitude: null,
   checkin_radius_m: 100,
+  allow_mock_payments: false,
   opening_time: "",
   closing_time: "",
   description: "",
@@ -346,6 +349,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
           latitude: toFiniteNumber(data.latitude ?? data.lat),
           longitude: toFiniteNumber(data.longitude ?? data.lng),
           checkin_radius_m: toFiniteNumber(data.checkin_radius_m) ?? 100,
+          allow_mock_payments: data.allow_mock_payments ?? false,
           gym_photos: Array.isArray(data.gym_photos) ? data.gym_photos : [],
           gym_videos: Array.isArray(data.gym_videos) ? data.gym_videos : [],
         });
@@ -1473,11 +1477,31 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
 
               {/* ── WALL QR ─────────────────────────────────────────────────── */}
               {activeCategory === "Wall QR" && (
-                <WallQRTab
-                  gymId={gymId}
-                  gymName={settings.gym_name}
-                  hasLocation={settings.latitude != null && settings.longitude != null}
-                />
+                <div className="space-y-6">
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    <WallQRTab
+                      gymId={gymId}
+                      gymName={settings.gym_name}
+                      hasLocation={settings.latitude != null && settings.longitude != null}
+                    />
+                    <GymJoinQRCode gymId={gymId} gymName={settings.gym_name} />
+                  </div>
+                  <Card className="border-border bg-white shadow-soft">
+                    <CardContent className="flex items-center justify-between gap-4 p-5">
+                      <div className="space-y-0.5">
+                        <p className="text-sm font-bold text-slate-900">Online payments (demo gateway)</p>
+                        <p className="text-xs text-muted-foreground">
+                          Let members self-activate instantly via "Pay Online". Leave OFF until a real
+                          gateway is connected — otherwise approve payments manually.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={settings.allow_mock_payments}
+                        onCheckedChange={(checked) => persistSettings({ allow_mock_payments: checked })}
+                      />
+                    </CardContent>
+                  </Card>
+                </div>
               )}
 
               {/* ── SECURITY ────────────────────────────────────────────────── */}
