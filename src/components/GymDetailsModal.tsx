@@ -491,7 +491,7 @@ export function GymDetailsModal({
                 <AnimatePresence mode="wait">
                   <motion.img
                     key={currentPhotoIndex}
-                    src={allGymPhotos[currentPhotoIndex]}
+                    src={allGymPhotos[currentPhotoIndex]?.url}
                     className="h-full w-full object-cover"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}

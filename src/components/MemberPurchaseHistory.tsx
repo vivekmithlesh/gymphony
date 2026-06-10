@@ -15,6 +15,8 @@ interface Purchase {
   purchase_date: string;
   category?: string;
   image_url?: string;
+  /** Raw row status: 'pending_verification' | 'rejected' | completed/Success/etc. */
+  status?: string;
 }
 
 const InventoryVisual = ({ purchase }: { purchase: Purchase }) => {
@@ -78,6 +80,21 @@ export function MemberPurchaseHistory({ memberId }: MemberPurchaseHistoryProps) 
 
   useEffect(() => {
     fetchPurchaseHistory();
+
+    // Live-update when the member buys something from the store.
+    const channel = supabase
+      .channel(`purchase_history_${memberId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "purchases", filter: `member_id=eq.${memberId}` },
+        () => fetchPurchaseHistory()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [memberId]);
 
   const fetchPurchaseHistory = async () => {
@@ -103,17 +120,46 @@ export function MemberPurchaseHistory({ memberId }: MemberPurchaseHistoryProps) 
         price: p.amount,
         purchase_date: p.payment_date || p.created_at,
         category: "Membership",
+        status: p.status,
       }));
 
-      // Try to fetch from inventory_sales (if exists) or just use payments for now
-      // Since I didn't find inventory_sales, I'll stick to payments but add a placeholder for future
-      
-      setPurchases(formattedPayments);
-      
-      if (formattedPayments.length > 0) {
-        const total = formattedPayments.reduce((sum, p) => sum + (Number(p.price) || 0), 0);
-        setTotalSpent(total);
+      // Store purchases (supplements, drinks, gear) from the gym store.
+      const { data: storeData, error: storeError } = await supabase
+        .from("purchases")
+        .select("id, item_name, quantity, unit_price, category, image_url, created_at, status")
+        .eq("member_id", memberId)
+        .order("created_at", { ascending: false })
+        .limit(20);
+
+      if (storeError) {
+        console.warn("Error fetching store purchases:", storeError.message);
       }
+
+      const formattedStore: Purchase[] = (storeData || []).map((s: any) => ({
+        id: s.id,
+        item_name: s.item_name || "Store Item",
+        quantity: s.quantity ?? 1,
+        price: Number(s.unit_price) || 0,
+        purchase_date: s.created_at,
+        category: s.category || "Store",
+        image_url: s.image_url || undefined,
+        status: s.status,
+      }));
+
+      // Merge both feeds, newest first. Hide rejected/cancelled/expired entirely.
+      const dropped = new Set(["rejected", "cancelled", "expired"]);
+      const merged = [...formattedStore, ...formattedPayments]
+        .filter((p) => !p.status || !dropped.has(p.status))
+        .sort((a, b) => new Date(b.purchase_date).getTime() - new Date(a.purchase_date).getTime());
+
+      setPurchases(merged);
+      // Total = confirmed spend only; pending (awaiting gym verification) is shown
+      // but not yet counted.
+      setTotalSpent(
+        merged
+          .filter((p) => p.status !== "pending_verification")
+          .reduce((sum, p) => sum + (Number(p.price) || 0) * (p.quantity || 1), 0)
+      );
     } catch (error: any) {
       console.error("Error fetching purchase history:", error);
     } finally {
@@ -213,6 +259,11 @@ export function MemberPurchaseHistory({ memberId }: MemberPurchaseHistoryProps) 
                       {purchase.category || "Item"}
                     </span>
                     <span className="text-xs text-slate-500">Qty: {purchase.quantity}</span>
+                    {purchase.status === "pending_verification" && (
+                      <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                        Pending
+                      </span>
+                    )}
                   </div>
                 </div>
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Package, 
@@ -55,6 +55,7 @@ import { hasAccess } from "@/lib/permissions";
 import { Crown, Lock } from 'lucide-react';
 import { useNavigate } from "@tanstack/react-router";
 import { ProtectedProRoute } from "@/components/ProtectedProRoute";
+import { timeLeftLabel, isCampaignExpired } from "@/lib/campaign";
 
 interface Product {
   id: string;
@@ -67,6 +68,17 @@ interface Product {
   show_in_app: boolean;
   image_url?: string;
   description?: string;
+}
+
+interface Campaign {
+  id: string;
+  name: string;
+  discount_percentage: number;
+  target_type: "global" | "streak";
+  applies_to: string;
+  is_active: boolean;
+  ends_at?: string | null;
+  created_at?: string;
 }
 
 export function InventoryManager() {
@@ -86,13 +98,19 @@ export function InventoryManager() {
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const [gymSettings, setGymSettings] = useState<any>(null);
+  const [ownerId, setOwnerId] = useState<string | null>(null);
+  // The gym's id (gym_settings.id) — stamped onto each product so the member
+  // storefront, which queries inventory by gym_id, can find it.
+  const [gymId, setGymId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchSettings = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user?.id) {
-        const { data } = await supabase.from('gym_settings').select('plan_type').eq('gym_owner_id', session.user.id).single();
+        setOwnerId(session.user.id);
+        const { data } = await supabase.from('gym_settings').select('id, plan_type').eq('gym_owner_id', session.user.id).single();
         setGymSettings(data);
+        setGymId(data?.id ?? null);
       }
     };
     fetchSettings();
@@ -114,66 +132,253 @@ export function InventoryManager() {
   const [isUpdatingStock, setIsUpdatingStock] = useState(false);
   const [stockUpdateValue, setStockUpdateValue] = useState("");
 
-  useEffect(() => {
-    if (gymSettings && isPro) {
-      fetchInventory();
-    } else if (gymSettings && !isPro) {
-      setIsLoading(false);
-    }
-  }, [gymSettings, isPro]);
+  // ── Campaigns ───────────────────────────────────────────────────────────────
+  const [campaignForm, setCampaignForm] = useState<{
+    name: string;
+    discount: string;
+    target_type: "global" | "streak";
+    applies_to: string;
+    duration_days: string;
+  }>({
+    name: "",
+    discount: "",
+    target_type: "global",
+    applies_to: "All",
+    duration_days: "",
+  });
+  const [isLaunchingCampaign, setIsLaunchingCampaign] = useState(false);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
 
-  const fetchInventory = async () => {
+  // Load this owner's campaigns so they can see and manage what they launched.
+  const fetchCampaigns = useCallback(async (owner: string) => {
+    const { data, error } = await supabase
+      .from("campaigns")
+      .select("id, name, discount_percentage, target_type, applies_to, is_active, ends_at, created_at")
+      .eq("gym_owner_id", owner)
+      .order("created_at", { ascending: false });
+    if (error) {
+      console.warn("Campaigns fetch error:", error.message);
+      return;
+    }
+    setCampaigns((data as Campaign[]) || []);
+  }, []);
+
+  const handleToggleCampaign = async (id: string, isActive: boolean) => {
+    const willBeActive = !isActive;
+    const camp = campaigns.find((c) => c.id === id);
+    // Resuming an already-ended campaign: clear its past end date so it actually
+    // goes live again (otherwise lazy expiry would keep hiding it from members).
+    const clearEnd = willBeActive && camp ? isCampaignExpired(camp.ends_at) : false;
+    const updates: { is_active: boolean; ends_at?: null } = { is_active: willBeActive };
+    if (clearEnd) updates.ends_at = null;
+
+    try {
+      let query = supabase.from("campaigns").update(updates).eq("id", id);
+      if (ownerId) query = query.eq("gym_owner_id", ownerId);
+      const { error } = await query;
+      if (error) throw error;
+      setCampaigns((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, is_active: willBeActive, ...(clearEnd ? { ends_at: null } : {}) } : c))
+      );
+      toast.success(
+        !willBeActive
+          ? "Campaign paused — hidden from members."
+          : clearEnd
+            ? "Campaign resumed with no end date — live for members."
+            : "Campaign resumed — live for members."
+      );
+    } catch (error: any) {
+      toast.error(`Could not update campaign: ${error.message || "Unknown error"}`);
+    }
+  };
+
+  const handleDeleteCampaign = async (id: string) => {
+    try {
+      let query = supabase.from("campaigns").delete().eq("id", id);
+      if (ownerId) query = query.eq("gym_owner_id", ownerId);
+      const { error } = await query;
+      if (error) throw error;
+      setCampaigns((prev) => prev.filter((c) => c.id !== id));
+      toast.success("Campaign deleted.");
+    } catch (error: any) {
+      toast.error(`Could not delete campaign: ${error.message || "Unknown error"}`);
+    }
+  };
+
+  const handleLaunchCampaign = async () => {
+    if (!campaignForm.name.trim()) {
+      toast.error("Give your campaign a name.");
+      return;
+    }
+    const discountNum = Number(campaignForm.discount);
+    if (!Number.isFinite(discountNum) || discountNum <= 0 || discountNum > 100) {
+      toast.error("Enter a discount between 1 and 100%.");
+      return;
+    }
+
+    // Optional duration: blank = runs until manually ended; otherwise auto-ends
+    // N days from now.
+    let endsAt: string | null = null;
+    if (campaignForm.duration_days.trim() !== "") {
+      const days = Number(campaignForm.duration_days);
+      if (!Number.isFinite(days) || days <= 0) {
+        toast.error("Duration must be a positive number of days (or leave it blank).");
+        return;
+      }
+      endsAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    }
+
+    try {
+      setIsLaunchingCampaign(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        toast.error("Please sign in again to launch a campaign.");
+        return;
+      }
+
+      const { error } = await supabase.from("campaigns").insert([{
+        name: campaignForm.name.trim(),
+        discount_percentage: discountNum,
+        target_type: campaignForm.target_type, // 'global' | 'streak'
+        applies_to: campaignForm.applies_to,     // 'All' | category name
+        is_active: true,
+        ends_at: endsAt,
+        gym_owner_id: user.id,
+      }]);
+
+      if (error) throw error;
+
+      toast.success("🚀 Campaign launched to the Member App!");
+      setIsCampaignModalOpen(false);
+      setCampaignForm({ name: "", discount: "", target_type: "global", applies_to: "All", duration_days: "" });
+      if (ownerId) fetchCampaigns(ownerId);
+    } catch (error: any) {
+      console.error("Launch campaign error:", error);
+      const hint = error.message?.toLowerCase().includes("does not exist")
+        ? "The 'campaigns' table is missing — run the provisioning SQL."
+        : error.message;
+      toast.error(`Could not launch campaign: ${hint || "Unknown error"}`);
+    } finally {
+      setIsLaunchingCampaign(false);
+    }
+  };
+
+  // Fetch this owner's inventory. Scoped by gym_owner_id for hard multi-tenant
+  // isolation (RLS also enforces it). Errors are surfaced — silently swallowing
+  // them is exactly why the grid showed "No products found" with no clue why.
+  const fetchInventory = useCallback(async (owner: string, opts?: { silent?: boolean }) => {
     try {
       setIsLoading(true);
       const { data, error } = await supabase
         .from("inventory")
         .select("*")
+        .eq("gym_owner_id", owner)
         .order("created_at", { ascending: false });
 
       if (error) {
         console.warn("Inventory fetch error:", error.message);
+        if (!opts?.silent) {
+          const hint = error.message.toLowerCase().includes("does not exist")
+            ? "The 'inventory' table is missing — run the provisioning SQL."
+            : error.message;
+          toast.error(`Could not load inventory: ${hint}`);
+        }
+        setProducts([]);
         return;
       }
-      
+
       const mappedProducts = (data || []).map(item => ({
         ...item,
         status: item.stock_quantity > 10 ? "In Stock" : (item.stock_quantity > 0 ? "Low Stock" : "Out of Stock")
       }));
-      
+
       setProducts(mappedProducts);
     } catch (error: any) {
-      console.warn("Silent fetch error in fetchInventory:", error);
+      console.warn("Fetch error in fetchInventory:", error);
+      if (!opts?.silent) toast.error(`Could not load inventory: ${error.message || "Unknown error"}`);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  // Load + subscribe to realtime once we know the Pro owner. The grid updates
+  // live on any insert/update/delete to THIS gym's inventory.
+  useEffect(() => {
+    if (!gymSettings) return;
+    if (!isPro || !ownerId) {
+      setIsLoading(false);
+      return;
+    }
+
+    fetchInventory(ownerId);
+    fetchCampaigns(ownerId);
+
+    const channel = supabase
+      .channel("inventory_realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "inventory", filter: `gym_owner_id=eq.${ownerId}` },
+        () => fetchInventory(ownerId, { silent: true })
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "campaigns", filter: `gym_owner_id=eq.${ownerId}` },
+        () => fetchCampaigns(ownerId)
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [gymSettings, isPro, ownerId, fetchInventory, fetchCampaigns]);
 
   const handleImageUpload = async (file: File | Blob) => {
     try {
+      // Validate before doing any work.
+      const contentType = file instanceof File ? file.type : "image/jpeg";
+      if (file instanceof File && !contentType.startsWith("image/")) {
+        toast.error("Please choose an image file.");
+        return null;
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error("Image is larger than 5 MB. Please pick a smaller file.");
+        return null;
+      }
+
       setUploadingImage(true);
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("Please login to upload images");
+      if (!user) {
+        toast.error("Please sign in to upload images.");
+        return null;
+      }
 
-      const fileExt = file instanceof File ? file.name.split('.').pop() : 'jpg';
-      const fileName = `${user.id}/${Math.random()}.${fileExt}`;
-      const filePath = `${fileName}`;
+      // Collision-safe path: owner folder + timestamp + short random + clean ext.
+      const rawExt = file instanceof File ? file.name.split(".").pop() ?? "jpg" : "jpg";
+      const ext = rawExt.toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+      const filePath = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
 
       const { error: uploadError } = await supabase.storage
-        .from('inventory-items')
-        .upload(filePath, file);
+        .from("inventory-items")
+        .upload(filePath, file, { upsert: true, contentType });
 
-      if (uploadError) throw uploadError;
+      if (uploadError) {
+        const msg = uploadError.message.toLowerCase().includes("not found") || uploadError.message.toLowerCase().includes("bucket")
+          ? "Storage bucket 'inventory-items' is missing or inaccessible. Create it in Supabase Storage (see provisioning SQL)."
+          : uploadError.message;
+        toast.error(`Image upload failed: ${msg}`);
+        return null;
+      }
 
       const { data: { publicUrl } } = supabase.storage
-        .from('inventory-items')
+        .from("inventory-items")
         .getPublicUrl(filePath);
 
-      setNewProduct({ ...newProduct, image_url: publicUrl });
+      setNewProduct((prev) => ({ ...prev, image_url: publicUrl }));
       toast.success("Image uploaded successfully!");
       return publicUrl;
     } catch (error: any) {
       console.warn("Error uploading image:", error);
-      // toast.error("Upload failed: " + error.message);
+      toast.error(`Image upload failed: ${error.message || "Unknown error"}`);
       return null;
     } finally {
       setUploadingImage(false);
@@ -259,29 +464,44 @@ export function InventoryManager() {
   };
 
   const handleAddProduct = async () => {
-    if (!newProduct.name || !newProduct.price || !newProduct.stock) {
-      toast.error("Please fill in all required fields");
+    if (!newProduct.name.trim() || !newProduct.price || !newProduct.stock) {
+      toast.error("Please fill in name, price and stock.");
+      return;
+    }
+
+    const priceNum = Number(newProduct.price);
+    const stockNum = Number(newProduct.stock);
+    if (!Number.isFinite(priceNum) || priceNum < 0) {
+      toast.error("Enter a valid, non-negative price.");
+      return;
+    }
+    if (!Number.isInteger(stockNum) || stockNum < 0) {
+      toast.error("Enter a valid, non-negative stock quantity.");
       return;
     }
 
     try {
       setIsSavingProduct(true);
-      
+
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("Authentication required");
+      if (!user) {
+        toast.error("Please sign in again to add products.");
+        return;
+      }
 
       const { error } = await supabase
         .from("inventory")
         .insert([{
-          item_name: newProduct.name,
-          price: Number(newProduct.price),
-          stock_quantity: Number(newProduct.stock),
+          item_name: newProduct.name.trim(),
+          price: priceNum,
+          stock_quantity: stockNum,
           category: newProduct.category,
           show_in_app: true,
           description: newProduct.description,
           brand: newProduct.brand,
-          image_url: newProduct.image_url,
-          gym_owner_id: user.id
+          image_url: newProduct.image_url || null,
+          gym_owner_id: user.id,
+          gym_id: gymId, // lets the member storefront find this product
         }]);
 
       if (error) throw error;
@@ -289,7 +509,7 @@ export function InventoryManager() {
       toast.success("✅ Product added to inventory!");
       setIsAddModalOpen(false);
       setNewProduct({ name: "", price: "", stock: "", category: "Supplements", description: "", brand: "", image_url: "" });
-      fetchInventory();
+      fetchInventory(user.id);
     } catch (error: any) {
       console.error("Error adding product:", error);
       toast.error(`Failed to add product: ${error.message || 'Unknown error'}`);
@@ -305,17 +525,19 @@ export function InventoryManager() {
       setIsUpdatingStock(true);
       const newStock = selectedProduct.stock_quantity + Number(stockUpdateValue);
       
-      const { error } = await supabase
+      let updateQuery = supabase
         .from("inventory")
         .update({ stock_quantity: newStock })
         .eq("id", selectedProduct.id);
+      if (ownerId) updateQuery = updateQuery.eq("gym_owner_id", ownerId);
+      const { error } = await updateQuery;
 
       if (error) throw error;
 
       toast.success(`Stock updated to ${newStock} units!`);
       setSelectedProduct({ ...selectedProduct, stock_quantity: newStock });
       setStockUpdateValue("");
-      fetchInventory();
+      if (ownerId) fetchInventory(ownerId, { silent: true });
     } catch (error: any) {
       console.warn("Failed to update stock:", error);
     } finally {
@@ -325,37 +547,41 @@ export function InventoryManager() {
 
   const toggleAppVisibility = async (id: string, currentVisibility: boolean) => {
     try {
-      const { error } = await supabase
+      let query = supabase
         .from("inventory")
         .update({ show_in_app: !currentVisibility })
         .eq("id", id);
+      if (ownerId) query = query.eq("gym_owner_id", ownerId);
+      const { error } = await query;
 
       if (error) throw error;
-      
-      setProducts(products.map(p => 
+
+      setProducts(products.map(p =>
         p.id === id ? { ...p, show_in_app: !currentVisibility } : p
       ));
-      toast.info("Visibility updated");
-    } catch (error) {
+      toast.info(currentVisibility ? "Hidden from Member App" : "Now visible in Member App");
+    } catch (error: any) {
       console.warn("Failed to update visibility:", error);
-      // toast.error("Failed to update visibility");
+      toast.error(`Could not update visibility: ${error.message || "Unknown error"}`);
     }
   };
 
   const handleDeleteProduct = async (id: string) => {
     try {
-      const { error } = await supabase
+      let query = supabase
         .from("inventory")
         .delete()
         .eq("id", id);
+      if (ownerId) query = query.eq("gym_owner_id", ownerId);
+      const { error } = await query;
 
       if (error) throw error;
-      
+
       setProducts(products.filter(p => p.id !== id));
       toast.success("Product deleted");
-    } catch (error) {
+    } catch (error: any) {
       console.warn("Failed to delete product:", error);
-      // toast.error("Failed to delete product");
+      toast.error(`Could not delete product: ${error.message || "Unknown error"}`);
     }
   };
 
@@ -507,6 +733,73 @@ export function InventoryManager() {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+
+        {/* Active Campaigns — view / pause / delete what you launched */}
+        {campaigns.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Megaphone className="h-4 w-4 text-primary" />
+              <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
+                Campaigns ({campaigns.filter((c) => c.is_active).length} live)
+              </h2>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {campaigns.map((c) => (
+                <div
+                  key={c.id}
+                  className={`flex items-center justify-between gap-3 rounded-2xl border p-4 transition-all ${
+                    c.is_active
+                      ? "border-primary/20 bg-primary/5"
+                      : "border-slate-200 bg-slate-50 opacity-70"
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">{c.target_type === "streak" ? "🔥" : "🌍"}</span>
+                      <p className="truncate font-bold text-slate-900">{c.name}</p>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      <span className="font-bold text-primary">{c.discount_percentage}% off</span>
+                      {" · "}
+                      {c.applies_to === "All" ? "Entire store" : c.applies_to}
+                      {" · "}
+                      {c.target_type === "streak" ? "30+ day streak" : "Everyone"}
+                      {isCampaignExpired(c.ends_at) ? (
+                        <span className="font-semibold text-red-500"> · Ended</span>
+                      ) : !c.is_active ? (
+                        " · Paused"
+                      ) : c.ends_at ? (
+                        <span className="font-semibold text-amber-600"> · {timeLeftLabel(c.ends_at)}</span>
+                      ) : (
+                        " · No end date"
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleToggleCampaign(c.id, c.is_active)}
+                      className="h-9 rounded-lg px-3 text-xs font-bold"
+                      title={c.is_active ? "Pause campaign" : "Resume campaign"}
+                    >
+                      {c.is_active ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDeleteCampaign(c.id)}
+                      className="h-9 rounded-lg px-3 text-xs font-bold text-red-500 hover:bg-red-50 hover:text-red-600"
+                      title="Delete campaign"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Inventory Grid */}
         <div className="relative">
@@ -967,44 +1260,102 @@ export function InventoryManager() {
                 <div className="p-4 rounded-2xl bg-primary/10 border border-primary/20 flex items-start gap-3">
                   <Sparkles className="h-5 w-5 text-primary mt-1 shrink-0" />
                   <p className="text-sm text-white/80 leading-relaxed">
-                    Set up a promotional offer for members with high attendance streaks. This will show up in the Member App Store.
+                    {campaignForm.target_type === "streak"
+                      ? "Reward members with a 30+ day attendance streak. The discount unlocks automatically in their App Store."
+                      : "Run a store-wide sale (e.g. Diwali) for every member. This shows up in the Member App Store."}
                   </p>
                 </div>
 
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <Label className="text-white/60 font-medium">Campaign Name</Label>
-                    <Input placeholder="e.g. 5-Day Streak Bonus" className="bg-white/5 border-white/10 text-white h-12 rounded-xl" />
+                    <Input
+                      value={campaignForm.name}
+                      onChange={(e) => setCampaignForm((p) => ({ ...p, name: e.target.value }))}
+                      placeholder="e.g. Diwali Sale / 30-Day Streak Bonus"
+                      className="bg-white/5 border-white/10 text-white h-12 rounded-xl"
+                    />
                   </div>
+
+                  <div className="space-y-2">
+                    <Label className="text-white/60 font-medium">Target Audience</Label>
+                    <Select
+                      value={campaignForm.target_type}
+                      onValueChange={(value) =>
+                        setCampaignForm((p) => ({ ...p, target_type: value as "global" | "streak" }))
+                      }
+                    >
+                      <SelectTrigger className="bg-white/5 border-white/10 text-white h-12 rounded-xl">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-900 border-white/10 text-white">
+                        <SelectItem value="global">🌍 Global Sale (everyone)</SelectItem>
+                        <SelectItem value="streak">🔥 Streak Achievers (30+ Days)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label className="text-white/60 font-medium">Discount (%)</Label>
-                      <Input type="number" placeholder="20" className="bg-white/5 border-white/10 text-white h-12 rounded-xl" />
+                      <Input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={campaignForm.discount}
+                        onChange={(e) => setCampaignForm((p) => ({ ...p, discount: e.target.value }))}
+                        placeholder="20"
+                        className="bg-white/5 border-white/10 text-white h-12 rounded-xl"
+                      />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white/60 font-medium">Applies to</Label>
-                      <Select defaultValue="Drinks">
+                      <Select
+                        value={campaignForm.applies_to}
+                        onValueChange={(value) => setCampaignForm((p) => ({ ...p, applies_to: value }))}
+                      >
                         <SelectTrigger className="bg-white/5 border-white/10 text-white h-12 rounded-xl">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent className="bg-slate-900 border-white/10 text-white">
+                          <SelectItem value="All">Entire Store</SelectItem>
+                          <SelectItem value="Supplements">All Supplements</SelectItem>
                           <SelectItem value="Drinks">All Drinks</SelectItem>
                           <SelectItem value="Gear">All Gear</SelectItem>
-                          <SelectItem value="All">Entire Store</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
                   </div>
+
+                  <div className="space-y-2">
+                    <Label className="text-white/60 font-medium">Ends after (days)</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={campaignForm.duration_days}
+                      onChange={(e) => setCampaignForm((p) => ({ ...p, duration_days: e.target.value }))}
+                      placeholder="e.g. 7 — leave blank to end it manually"
+                      className="bg-white/5 border-white/10 text-white h-12 rounded-xl"
+                    />
+                    <p className="text-[11px] text-white/40">
+                      Members see a live countdown. Blank = runs until you pause or delete it.
+                    </p>
+                  </div>
                 </div>
 
-                <Button 
-                  onClick={() => {
-                    setIsCampaignModalOpen(false);
-                    toast.success("🚀 Campaign launched to Member App!");
-                  }}
-                  className="w-full h-14 rounded-2xl bg-gradient-brand text-white font-bold shadow-glow hover:shadow-primary/40 transition-all mt-4"
+                <Button
+                  onClick={handleLaunchCampaign}
+                  disabled={isLaunchingCampaign}
+                  className="w-full h-14 rounded-2xl bg-gradient-brand text-white font-bold shadow-glow hover:shadow-primary/40 transition-all mt-4 disabled:opacity-60"
                 >
-                  Blast to Member App
+                  {isLaunchingCampaign ? (
+                    <>
+                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                      Launching…
+                    </>
+                  ) : (
+                    "Blast to Member App"
+                  )}
                 </Button>
               </div>
             </motion.div>

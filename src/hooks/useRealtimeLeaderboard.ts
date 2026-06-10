@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { supabase } from "@/supabase";
+import { toast } from "sonner";
 
 export type LeaderboardEntry = {
   rank: number;
@@ -13,6 +14,8 @@ export type LeaderboardEntry = {
   gym_owner_id?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  email?: string | null;
+  mobile_number?: string | null;
   is_active?: boolean;
 };
 
@@ -115,7 +118,7 @@ export function useRealtimeLeaderboard(city: string = "ALIGARH", enableRealtime:
         if (gymIds.length > 0) {
           const { data, error } = await supabase
             .from('gym_settings')
-            .select('id, gym_name, city, latitude, longitude, gym_owner_id, logo_url')
+            .select('id, gym_name, city, latitude, longitude, gym_owner_id, logo_url, owner_email, contact_number')
             .in('id', gymIds as any[]);
 
           if (error) {
@@ -128,7 +131,7 @@ export function useRealtimeLeaderboard(city: string = "ALIGARH", enableRealtime:
           // fallback to full fetch
           const { data, error } = await supabase
             .from('gym_settings')
-            .select('id, gym_name, city, latitude, longitude, gym_owner_id, logo_url');
+            .select('id, gym_name, city, latitude, longitude, gym_owner_id, logo_url, owner_email, contact_number');
           if (error) {
             console.error('DEBUG: gym_settings fetch error (all):', error);
             gymsData = [];
@@ -188,6 +191,8 @@ export function useRealtimeLeaderboard(city: string = "ALIGARH", enableRealtime:
           latitude: Number.isFinite(lat) ? lat : null,
           longitude: Number.isFinite(lng) ? lng : null,
           gym_owner_id: gym.gym_owner_id || null,
+          email: gym.owner_email ?? null,
+          mobile_number: gym.contact_number ?? null,
           // append logoVersion cache-buster so updates propagate immediately
           logo_url: (gym.logo_url ? `${gym.logo_url}${gym.logo_url.includes('?') ? '&' : '?'}v=${logoVersion}` : ""),
           gym_photos: [],

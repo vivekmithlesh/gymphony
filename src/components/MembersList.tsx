@@ -13,7 +13,8 @@ import {
   X,
   Sparkles,
   DollarSign,
-  MessageSquare
+  MessageSquare,
+  Upload
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { 
@@ -33,10 +34,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { BackButton } from "./BackButton";
+import { BulkOnboard } from "./BulkOnboard";
 import { supabase } from "@/supabase";
 import { QRCodeSVG } from "qrcode.react";
 import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
 import { isValidInternationalPhone, normalizeToE164Phone, phoneForWaMe } from "@/lib/phone";
+import { isApprovedPayment } from "@/lib/revenue";
 
 // Optimized Member Row Component
 const MemberRow = memo(({ 
@@ -146,6 +149,8 @@ export function MembersList() {
   const [isUpdating, setIsUpdating] = useState(false);
   const [availablePlans, setAvailablePlans] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [isBulkOpen, setIsBulkOpen] = useState(false);
+  const [gymMeta, setGymMeta] = useState<{ id: string | null; name: string }>({ id: null, name: "" });
   const [editForm, setEditForm] = useState({
     full_name: "",
     mobile_number: "",
@@ -242,7 +247,7 @@ export function MembersList() {
       // 1. First get the owner's Gym ID
       const { data: gymData, error: gymError } = await supabase
         .from("gym_settings")
-        .select("id")
+        .select("id, gym_name")
         .eq("gym_owner_id", userId)
         .maybeSingle();
 
@@ -251,6 +256,7 @@ export function MembersList() {
       }
 
       const gymId = gymData?.id;
+      setGymMeta({ id: gymId ?? null, name: gymData?.gym_name ?? "" });
       console.log('Fetching Members with owner filters:', { userId, gymId });
 
       // 2. Fetch members belonging to this gym or directly added by this owner
@@ -284,26 +290,33 @@ export function MembersList() {
       const memberIds = memberRows.map((member: any) => member.id).filter(Boolean);
 
       if (memberIds.length > 0) {
-        const { data: profileAmounts, error: profileAmountsError } = await supabase
-          .from("profiles")
-          .select("id, amount_paid")
-          .in("id", memberIds);
+        // "Amount Paid" is derived from the payments ledger — counting ONLY
+        // approved (Paid/Success) rows — so it matches the Dashboard and Revenue
+        // pages and never shows stale profiles.amount_paid test data or
+        // unapproved (pending_verification/rejected) payments.
+        const { data: paymentRows, error: paymentsError } = await supabase
+          .from("payments")
+          .select("member_id, amount, status")
+          .in("member_id", memberIds);
 
-        if (!profileAmountsError) {
-          const amountPaidById = new Map(
-            (profileAmounts || []).map((row: any) => [row.id, Number(row.amount_paid) || 0])
-          );
+        if (!paymentsError) {
+          const paidByMember = new Map<string, number>();
+          for (const p of paymentRows || []) {
+            if (!isApprovedPayment(p.status)) continue;
+            paidByMember.set(
+              p.member_id,
+              (paidByMember.get(p.member_id) || 0) + (Number(p.amount) || 0)
+            );
+          }
 
           setMembers(
             memberRows.map((member: any) => ({
               ...member,
-              amount_paid: amountPaidById.has(member.id)
-                ? amountPaidById.get(member.id)
-                : Number(member.amount_paid) || 0
+              amount_paid: paidByMember.get(member.id) || 0
             }))
           );
         } else {
-          console.warn("Profile amount fetch error:", profileAmountsError.message);
+          console.warn("Payments fetch error:", paymentsError.message);
           setMembers(memberRows);
         }
       } else {
@@ -351,6 +364,7 @@ export function MembersList() {
       // Find the price for the member's plan
       const plan = availablePlans.find(p => p.name === member.membership_plan);
       const amount = plan ? plan.price : (member.membership_plan === 'Yearly' ? 12000 : (member.membership_plan === 'Quarterly' ? 4000 : 1500));
+      const newTotal = Number(member.amount_paid || 0) + amount;
 
       // Update member status to 'Active' in profiles (since members is a view)
       const { error: memberError } = await supabase
@@ -397,7 +411,7 @@ export function MembersList() {
       setMembers(prev => prev.map(m => 
         m.id === member.id ? { ...m, status: "Active" } : m
       ));
-      setPaymentMember((prev) => prev && prev.id === member.id ? { ...prev, status: "Active", amount_paid: newTotal } : prev);
+      setPaymentMember((prev: any) => prev && prev.id === member.id ? { ...prev, status: "Active", amount_paid: newTotal } : prev);
 
       window.dispatchEvent(new CustomEvent("member-payment-updated", {
         detail: {
@@ -501,15 +515,23 @@ export function MembersList() {
         return;
       }
 
-      // 1. Update member's amount_paid in the base table
+      // 1. Record the collected payment in the ledger as an approved ('Paid')
+      //    row. The "Amount Paid" column, Dashboard and Revenue pages all derive
+      //    from approved payments, so writing here (not profiles.amount_paid) is
+      //    what makes the collection show up. The app_fill_payment_owner trigger
+      //    backfills gym_owner_id/gym_id from the members view.
       const currentPaid = Number(paymentMember.amount_paid || 0);
       const newTotal = currentPaid + amount;
 
       const { error: updateError } = await supabase
-        .from("profiles")
-        .update({ amount_paid: newTotal })
-        .eq("id", paymentMember.id)
-        .eq("gym_owner_id", userId);
+        .from("payments")
+        .insert([{
+          member_id: paymentMember.id,
+          gym_owner_id: userId,
+          amount: amount,
+          status: 'Paid',
+          payment_date: new Date().toISOString(),
+        }]);
 
       if (updateError) throw updateError;
 
@@ -518,7 +540,7 @@ export function MembersList() {
           ? { ...member, amount_paid: newTotal }
           : member
       ));
-      setPaymentMember(prev => prev ? { ...prev, amount_paid: newTotal } : prev);
+      setPaymentMember((prev: any) => prev ? { ...prev, amount_paid: newTotal } : prev);
 
       // 2. Record activity
       await supabase.from("activity_log").insert({
@@ -574,6 +596,13 @@ export function MembersList() {
         </div>
         
         <div className="flex items-center gap-3 w-full md:w-auto">
+          <Button
+            onClick={() => setIsBulkOpen(true)}
+            variant="outline"
+            className="h-10 rounded-xl border-slate-200 bg-white text-slate-700 font-semibold hover:bg-primary/5 hover:text-primary whitespace-nowrap"
+          >
+            <Upload className="h-4 w-4 mr-2 text-primary" /> Upload Data
+          </Button>
           <Filter className="h-4 w-4 text-muted-foreground hidden md:block" />
           <Select value={filterStatus} onValueChange={setFilterStatus}>
             <SelectTrigger className="w-full md:w-45 bg-white border-slate-200 rounded-xl text-slate-900">
@@ -587,6 +616,17 @@ export function MembersList() {
           </Select>
         </div>
       </div>
+
+      {/* Bulk Onboarding & Auto-Invite */}
+      <BulkOnboard
+        open={isBulkOpen}
+        onClose={() => setIsBulkOpen(false)}
+        gymId={gymMeta.id}
+        gymOwnerId={currentUser?.id ?? null}
+        gymName={gymMeta.name}
+        plans={availablePlans}
+        onComplete={fetchMembers}
+      />
 
       {/* Data Table */}
       <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-soft">

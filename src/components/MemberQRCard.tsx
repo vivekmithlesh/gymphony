@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2, QrCode as QRCodeIcon } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
 import { toast } from "sonner";
+import { supabase } from "@/supabase";
+import { buildMemberPass } from "@/lib/kioskPass";
 
 interface MemberQRCardProps {
   member: {
@@ -12,11 +14,15 @@ interface MemberQRCardProps {
     avatar_url?: string | null;
     status?: string | null;
     subscription_status?: string | null;
+    gym_id?: string | null;
   };
 }
 
+// The pass payload (and its inverse, the kiosk parser) lives in @/lib/kioskPass
+// so the Virtual ID Card and the Kiosk Scanner can never drift out of sync.
+
 export function MemberQRCard({ member }: MemberQRCardProps) {
-  const [qrValue, setQrValue] = useState<string>(member.id || "");
+  const [qrValue, setQrValue] = useState<string>(() => buildMemberPass(member));
   const [qrReady, setQrReady] = useState(!!member.id);
   const [localFullName, setLocalFullName] = useState(member.full_name || "");
   const [isUpdating, setIsUpdating] = useState(false);
@@ -29,12 +35,12 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
 
   useEffect(() => {
     const displayId = member.short_id || formatMemberId(member.id);
-    setQrValue(member.id || "");
+    setQrValue(buildMemberPass(member));
     setQrReady(!!member.id);
     if (displayId) {
       setLocalFullName(member.full_name || "");
     }
-  }, [member.id, member.short_id]);
+  }, [member.id, member.gym_id, member.short_id]);
 
   const formatMemberId = (value: string) => {
     const cleaned = (value || "").replace(/[^a-zA-Z0-9]/g, "");
@@ -94,11 +100,11 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
           </div>
           <div className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 min-h-35 flex items-center justify-center">
             {qrReady && qrValue ? (
-              <QRCodeCanvas 
-                value={qrValue} 
-                size={140} 
-                level="H" 
-                includeMargin={false}
+              <QRCodeCanvas
+                value={qrValue}
+                size={150}
+                level="M"
+                includeMargin
               />
             ) : (
               <div className="w-35 h-35 bg-slate-50 rounded-xl flex items-center justify-center border border-dashed border-slate-200">

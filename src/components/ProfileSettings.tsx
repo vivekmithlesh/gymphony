@@ -56,7 +56,7 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
         if (error) throw error;
 
         if (data) {
-          setMember(prev => ({ ...prev, ...data }));
+          setMember((prev: any) => ({ ...prev, ...data }));
           setFullName(data.full_name || "");
           setWhatsappNumber(data.mobile_number || data.whatsapp_number || "");
           setAvatarUrl(data.avatar_url || null);
@@ -127,7 +127,7 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
         let errorMessage = "Failed to update profile";
         if (profileError.code === '42703') errorMessage = "Database Error: Column missing";
         if (profileError.code === '42P01') errorMessage = "Database Error: Table not found";
-        if (profileError.code === 'PGRST301' || profileError.status === 403) errorMessage = "Permission Denied: RLS Policy Violation";
+        if (profileError.code === 'PGRST301' || (profileError as any).status === 403) errorMessage = "Permission Denied: RLS Policy Violation";
         
         toast.error(errorMessage);
         throw profileError;

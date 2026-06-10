@@ -18,7 +18,7 @@ export default function KioskMode() {
   }, []);
 
   return (
-    <div className="h-screen w-screen bg-gray-900 flex overflow-hidden font-sans text-white">
+    <div className="min-h-screen w-screen bg-gray-900 flex flex-col lg:flex-row overflow-y-auto lg:overflow-hidden font-sans text-white">
       
       {/* Left Side - Scanner Area */}
       <div className="flex-1 flex flex-col items-center justify-center relative p-8">
@@ -34,7 +34,7 @@ export default function KioskMode() {
         </p>
 
         {/* Mock Camera Feed */}
-        <div className="w-[400px] h-[400px] bg-gray-800 rounded-3xl border-4 border-gray-700 relative overflow-hidden shadow-2xl flex items-center justify-center">
+        <div className="w-full max-w-100 aspect-square bg-gray-800 rounded-3xl border-4 border-gray-700 relative overflow-hidden shadow-2xl flex items-center justify-center">
           <div className="absolute inset-0 border-4 border-purple-500/30 rounded-3xl m-4"></div>
           {/* Scanning animation line */}
           <div className="absolute top-0 left-0 w-full h-1 bg-purple-500 shadow-[0_0_15px_#a855f7] animate-[scan_2s_ease-in-out_infinite]"></div>
@@ -43,7 +43,7 @@ export default function KioskMode() {
       </div>
 
       {/* Right Side - Status & Logs */}
-      <div className="w-96 bg-gray-800 border-l border-gray-700 p-8 flex flex-col">
+      <div className="w-full lg:w-96 bg-gray-800 border-t lg:border-t-0 lg:border-l border-gray-700 p-8 flex flex-col">
         {/* Live Clock */}
         <div className="mb-12">
           <p className="text-5xl font-light tracking-wider mb-2">

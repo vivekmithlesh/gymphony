@@ -216,7 +216,7 @@ export function AttendanceView() {
       // Simple fetch (no owner filter)
       const { data, error } = await supabase
         .from("check_ins")
-        .select("created_at")
+        .select("id, member_id, created_at")
         .eq("member_id", selectedMemberId)
         .gte("created_at", startOfMonth)
         .lte("created_at", endOfMonth)

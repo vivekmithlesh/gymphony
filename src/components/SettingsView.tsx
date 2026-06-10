@@ -23,9 +23,11 @@ import {
   Zap,
   LocateFixed,
   MapPinned,
+  MapPin,
   Search,
   Navigation2,
   Crosshair,
+  QrCode,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,10 +45,23 @@ import { toast } from "sonner";
 import { supabase } from "@/supabase";
 import { initiatePhonePePayment, finalizeUpgrade } from "@/lib/phonepe";
 import { hasAccess } from "@/lib/permissions";
+import { WallQRTab } from "@/components/WallQRTab";
+import { GymJoinQRCode } from "@/components/GymJoinQRCode";
+import { TimePicker } from "@/components/TimePicker";
+// NOTE: do NOT statically import "@/lib/leafletDefaultIcon" here — it pulls in
+// `leaflet`, which touches `window` at module load and crashes SSR for every
+// route (SettingsView is in the dashboard's static import graph). The default
+// icon fix is applied client-side inside LeafletMap's lazy import below.
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const MEDIA_BUCKET = "gym-photos";
+// TODO: replace YOUR_SUPPORT_NUMBER with Gymphony's official support WhatsApp
+// number (digits only, incl. country code, e.g. 919876543210).
+const SUPPORT_WHATSAPP_NUMBER = "YOUR_SUPPORT_NUMBER";
+const SUPPORT_WHATSAPP_URL = `https://wa.me/${SUPPORT_WHATSAPP_NUMBER}?text=${encodeURIComponent(
+  "Hi Gymphony Support, I need help with my gym dashboard",
+)}`;
 const ALIGARH_CENTER: [number, number] = [27.8974, 78.088];
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024; // 25 MB
 const VIDEO_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
@@ -67,19 +82,28 @@ type GymSettings = {
   address: string;
   owner_email: string;
   contact_number: string;
+  upi_id: string | null;
   logo_url: string | null;
   gym_photos: string[];
   gym_videos: string[];
   latitude: number | null;
   longitude: number | null;
+  checkin_radius_m: number;
+  allow_mock_payments: boolean;
   opening_time: string;
   closing_time: string;
   description: string;
   whatsapp_reminders: boolean;
   daily_summary_email: boolean;
+  notify_new_member: boolean;
+  notify_pending_payment: boolean;
+  notify_low_stock: boolean;
   plan_type: "Free" | "Pro";
   plan_status: "Active" | "Inactive" | "Expired";
   expiry_date: string | null;
+  terms_url: string | null;
+  privacy_url: string | null;
+  refund_url: string | null;
 };
 
 type Plan = {
@@ -100,6 +124,19 @@ const toFiniteNumber = (value: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+// Light URL check for the legal links: empty is allowed (optional); otherwise it
+// must parse as a URL with a dotted hostname. A missing scheme is treated as https.
+const isValidUrl = (value: string): boolean => {
+  const s = value.trim();
+  if (!s) return true;
+  try {
+    const u = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`);
+    return !!u.hostname && u.hostname.includes(".");
+  } catch {
+    return false;
+  }
+};
+
 const buildDefaultSettings = (userId: string, email: string): Omit<GymSettings, "id"> => ({
   gym_owner_id: userId,
   gym_name: "Royal Fitness Gym",
@@ -108,19 +145,28 @@ const buildDefaultSettings = (userId: string, email: string): Omit<GymSettings, 
   address: "123 Fitness Street, Near Central Park",
   owner_email: email,
   contact_number: "+91 7906240659",
+  upi_id: null,
   logo_url: null,
   gym_photos: [],
   gym_videos: [],
   latitude: null,
   longitude: null,
+  checkin_radius_m: 100,
+  allow_mock_payments: false,
   opening_time: "",
   closing_time: "",
   description: "",
   whatsapp_reminders: true,
   daily_summary_email: false,
+  notify_new_member: true,
+  notify_pending_payment: true,
+  notify_low_stock: true,
   plan_type: "Free",
   plan_status: "Active",
   expiry_date: null,
+  terms_url: null,
+  privacy_url: null,
+  refund_url: null,
 });
 
 async function compressImage(file: File, maxWidth = 1920, quality = 0.8): Promise<File> {
@@ -163,8 +209,18 @@ function LeafletMap({ center, zoom, className, children }: LeafletMapProps) {
   const [leaflet, setLeaflet] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
-    Promise.all([import("leaflet"), import("react-leaflet")]).then(([L, RL]) => {
-      setLeaflet({ L: L.default ?? L, ...RL });
+    Promise.all([
+      import("leaflet"),
+      import("react-leaflet"),
+      import("@/lib/leafletDefaultIcon"),
+    ]).then(([L, RL, icon]) => {
+      const leafletInstance = L.default ?? L;
+      setLeaflet({
+        L: leafletInstance,
+        // Explicit stock blue pin, built on the SAME instance the map draws with.
+        markerIcon: icon.createDefaultMarkerIcon(leafletInstance),
+        ...RL,
+      });
     });
   }, []);
 
@@ -215,10 +271,17 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
   );
   const [isLoadingSettings, setIsLoadingSettings] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  // Tracks which legal link inputs currently hold an invalid URL (validated on blur).
+  const [legalErrors, setLegalErrors] = useState<Record<string, boolean>>({});
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
 
   // ── Location state ──────────────────────────────────────────────────────────
   const [locationDraft, setLocationDraft] = useState<LocationDraft>({ latitude: null, longitude: null });
   const [locationQuery, setLocationQuery] = useState("");
+  // Editable text mirrors of the coordinates. Kept as strings so an owner can
+  // type intermediate values ("12.", "-") without the field reformatting mid-edit.
+  const [latInput, setLatInput] = useState("");
+  const [lngInput, setLngInput] = useState("");
   const [isDetectingLocation, setIsDetectingLocation] = useState(false);
   const [isSearchingLocation, setIsSearchingLocation] = useState(false);
   const [isSavingLocation, setIsSavingLocation] = useState(false);
@@ -232,6 +295,8 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
   const [isAddingPlan, setIsAddingPlan] = useState(false);
   const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
   const [planForm, setPlanForm] = useState({ name: "", price: "", duration: "" });
+  const [isSavingPlan, setIsSavingPlan] = useState(false);
+  const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null);
 
   // ── Billing state ───────────────────────────────────────────────────────────
   const [isProcessingBilling, setIsProcessingBilling] = useState(false);
@@ -254,10 +319,11 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
   }, []);
 
   useEffect(() => {
-    setLocationDraft({
-      latitude: toFiniteNumber(settings.latitude),
-      longitude: toFiniteNumber(settings.longitude),
-    });
+    const lat = toFiniteNumber(settings.latitude);
+    const lng = toFiniteNumber(settings.longitude);
+    setLocationDraft({ latitude: lat, longitude: lng });
+    setLatInput(lat !== null ? lat.toFixed(6) : "");
+    setLngInput(lng !== null ? lng.toFixed(6) : "");
   }, [settings.latitude, settings.longitude]);
 
   useEffect(() => {
@@ -282,6 +348,8 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
           ...data,
           latitude: toFiniteNumber(data.latitude ?? data.lat),
           longitude: toFiniteNumber(data.longitude ?? data.lng),
+          checkin_radius_m: toFiniteNumber(data.checkin_radius_m) ?? 100,
+          allow_mock_payments: data.allow_mock_payments ?? false,
           gym_photos: Array.isArray(data.gym_photos) ? data.gym_photos : [],
           gym_videos: Array.isArray(data.gym_videos) ? data.gym_videos : [],
         });
@@ -485,10 +553,39 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
   );
 
   // ── Location ──────────────────────────────────────────────────────────────────
+  // Single funnel for every programmatic update (detect GPS, address search,
+  // map click, pin drag). Keeps the draft, the search box, AND the editable
+  // lat/lng text fields in sync so the pin and the inputs always agree.
   const pickLocation = useCallback((lat: number, lng: number) => {
     setLocationDraft({ latitude: lat, longitude: lng });
     setLocationQuery(`${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+    setLatInput(lat.toFixed(6));
+    setLngInput(lng.toFixed(6));
   }, []);
+
+  // Manual typing into the lat/lng fields. We update the draft (which moves the
+  // pin) only once the pair forms a valid coordinate, but never reformat the
+  // string the owner is actively editing.
+  const commitManualCoords = useCallback((latStr: string, lngStr: string) => {
+    const lat = Number(latStr);
+    const lng = Number(lngStr);
+    const latOk = latStr.trim() !== "" && Number.isFinite(lat) && lat >= -90 && lat <= 90;
+    const lngOk = lngStr.trim() !== "" && Number.isFinite(lng) && lng >= -180 && lng <= 180;
+    if (latOk && lngOk) {
+      setLocationDraft({ latitude: lat, longitude: lng });
+      setLocationQuery(`${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+    }
+  }, []);
+
+  const handleLatInput = useCallback((value: string) => {
+    setLatInput(value);
+    commitManualCoords(value, lngInput);
+  }, [commitManualCoords, lngInput]);
+
+  const handleLngInput = useCallback((value: string) => {
+    setLngInput(value);
+    commitManualCoords(latInput, value);
+  }, [commitManualCoords, latInput]);
 
   const detectLocation = useCallback(() => {
     if (!navigator.geolocation) { toast.error("GPS not available in this browser."); return; }
@@ -533,14 +630,19 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
       toast.error("Pick a location on the map first.");
       return;
     }
+    // Clamp the radius to the DB-enforced bounds so a stray value can't 400 the
+    // upsert or silently disable the geo-fence. Mirrors the CHECK on
+    // gym_settings.checkin_radius_m (migration 20260616).
+    const radius = Math.min(2000, Math.max(20, Math.round(toFiniteNumber(settings.checkin_radius_m) ?? 100)));
     setIsSavingLocation(true);
     const saved = await persistSettings({
       latitude: locationDraft.latitude,
       longitude: locationDraft.longitude,
+      checkin_radius_m: radius,
     });
     if (saved) toast.success("Gym location saved!");
     setIsSavingLocation(false);
-  }, [userId, locationDraft, persistSettings]);
+  }, [userId, locationDraft, settings.checkin_radius_m, persistSettings]);
 
   // ── Plans ─────────────────────────────────────────────────────────────────────
   const fetchPlans = useCallback(async () => {
@@ -585,15 +687,39 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
     }
   }, [gymId]);
 
-  const handleAddPlan = useCallback(async () => {
+  // Shared validation for the plan form.
+  const validatePlanForm = () => {
     const { name, price, duration } = planForm;
-    if (!name || !price || !duration) { toast.error("Fill all plan fields."); return; }
+    if (!name.trim() || price === "" || duration === "") {
+      toast.error("Fill in the plan name, price and duration.");
+      return null;
+    }
+    const priceNum = Number(price);
+    const durationNum = Number(duration);
+    if (!Number.isFinite(priceNum) || priceNum < 0) {
+      toast.error("Enter a valid, non-negative price.");
+      return null;
+    }
+    if (!Number.isInteger(durationNum) || durationNum < 1) {
+      toast.error("Duration must be a whole number of months (1 or more).");
+      return null;
+    }
+    return { name: name.trim(), priceNum, durationNum };
+  };
+
+  const handleAddPlan = useCallback(async () => {
+    const valid = validatePlanForm();
+    if (!valid) return;
+    if (!gymId) { toast.error("Gym profile still loading — try again in a moment."); return; }
+
+    setIsSavingPlan(true);
     try {
       const { error } = await supabase.from("gym_plans").insert([{
-        name,
-        price: Number(price),
-        duration: Number(duration),
-        duration_days: Number(duration) * 30,
+        name: valid.name,
+        plan_name: valid.name,
+        price: valid.priceNum,
+        duration: valid.durationNum,
+        duration_days: valid.durationNum * 30,
         gym_id: gymId,
       }]);
       if (error) throw error;
@@ -603,21 +729,27 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
       await fetchPlans();
     } catch (err: unknown) {
       toast.error("Add plan failed: " + (err as Error).message);
+    } finally {
+      setIsSavingPlan(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planForm, gymId, fetchPlans]);
 
   const handleUpdatePlan = useCallback(async () => {
     if (!editingPlan) return;
-    const { name, price, duration } = planForm;
-    if (!name || !price || !duration) { toast.error("Fill all plan fields."); return; }
+    const valid = validatePlanForm();
+    if (!valid) return;
+
+    setIsSavingPlan(true);
     try {
       const { error } = await supabase
         .from("gym_plans")
-        .update({ name, plan_name: name, price: Number(price), duration: Number(duration) })
-        .eq("id", editingPlan.id);
+        .update({ name: valid.name, plan_name: valid.name, price: valid.priceNum, duration: valid.durationNum, duration_days: valid.durationNum * 30 })
+        .eq("id", editingPlan.id)
+        .eq("gym_id", gymId);
       if (error) throw error;
       setPlans((prev) => prev.map((p) => p.id === editingPlan.id
-        ? { ...p, name, plan_name: name, price: Number(price), duration: Number(duration) }
+        ? { ...p, name: valid.name, plan_name: valid.name, price: valid.priceNum, duration: valid.durationNum }
         : p,
       ));
       setEditingPlan(null);
@@ -625,20 +757,37 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
       toast.success("Plan updated!");
     } catch (err: unknown) {
       toast.error("Update plan failed: " + (err as Error).message);
+    } finally {
+      setIsSavingPlan(false);
     }
-  }, [editingPlan, planForm]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingPlan, planForm, gymId]);
 
-  const handleDeletePlan = useCallback(async (id: string) => {
-    if (!window.confirm("Delete this plan?")) return;
-    try {
-      const { error } = await supabase.from("gym_plans").delete().eq("id", id);
-      if (error) throw error;
-      setPlans((prev) => prev.filter((p) => p.id !== id));
-      toast.success("Plan deleted.");
-    } catch (err: unknown) {
-      toast.error("Delete failed: " + (err as Error).message);
-    }
-  }, []);
+  // Delete with an inline confirmation toast (no blocking native dialog).
+  const handleDeletePlan = useCallback((id: string, name?: string) => {
+    toast(`Delete "${name || "this plan"}"?`, {
+      description: "New sign-ups won't see it. Existing members keep their current plan.",
+      action: {
+        label: "Delete",
+        onClick: async () => {
+          setDeletingPlanId(id);
+          try {
+            let query = supabase.from("gym_plans").delete().eq("id", id);
+            if (gymId) query = query.eq("gym_id", gymId);
+            const { error } = await query;
+            if (error) throw error;
+            setPlans((prev) => prev.filter((p) => p.id !== id));
+            toast.success("Plan deleted.");
+          } catch (err: unknown) {
+            toast.error("Delete failed: " + (err as Error).message);
+          } finally {
+            setDeletingPlanId(null);
+          }
+        },
+      },
+      cancel: { label: "Cancel", onClick: () => {} },
+    });
+  }, [gymId]);
 
   const startEditing = useCallback((plan: Plan) => {
     setEditingPlan(plan);
@@ -695,7 +844,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
         const stripe = await loadStripe(STRIPE_KEY);
         if (!stripe) throw new Error("Stripe failed to load.");
         toast.info("Redirecting to Stripe...");
-        setTimeout(() => finalizeUpgrade(), 2000);
+        setTimeout(() => finalizeUpgrade(userId), 2000);
       } catch (err: unknown) {
         toast.error((err as Error).message);
         setIsProcessingBilling(false);
@@ -703,15 +852,42 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
     }
   }, [currency, userId]);
 
+  // FLOW 1 — Mock SaaS checkout (gym owner → platform). Shows a button spinner,
+  // simulates the gateway round-trip (2s) so the UI never freezes, then a success
+  // toast. No real charge: wire the Razorpay order + webhook later (handleGetPro
+  // above holds the real PhonePe/Stripe path to re-enable).
+  const mockSaaSCheckout = useCallback(async () => {
+    if (isProcessingBilling) return;
+    setIsProcessingBilling(true);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      toast.success("Mock Gateway: Subscription Activated. Connect Razorpay API here later.");
+    } catch {
+      toast.error("Could not start checkout. Please try again.");
+    } finally {
+      setIsProcessingBilling(false);
+    }
+  }, [isProcessingBilling]);
+
   // ── Security / Support ────────────────────────────────────────────────────────
   const handlePasswordReset = useCallback(async () => {
     if (!settings.owner_email) { toast.error("Owner email not set."); return; }
-    const { error } = await supabase.auth.resetPasswordForEmail(settings.owner_email, {
-      redirectTo: `${window.location.origin}/reset-password`,
-    });
-    if (error) toast.error(error.message);
-    else toast.success("Password reset link sent!");
-  }, [settings.owner_email]);
+    if (isResettingPassword) return;
+    setIsResettingPassword(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(settings.owner_email, {
+        // window.location.origin works in dev + prod; ensure /reset-password is in
+        // Supabase Auth → URL Configuration → Redirect URLs.
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) throw error;
+      toast.success("Reset link sent to your registered email!");
+    } catch (err: unknown) {
+      toast.error((err as Error).message || "Could not send reset link. Please try again.");
+    } finally {
+      setIsResettingPassword(false);
+    }
+  }, [settings.owner_email, isResettingPassword]);
 
   // ── Derived ───────────────────────────────────────────────────────────────────
   const logoFallback = (settings.gym_name || "RF")
@@ -720,6 +896,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
 
   const menuItems = [
     { name: "Gym Profile", icon: Building2 },
+    { name: "Wall QR", icon: QrCode },
     { name: "Security", icon: ShieldCheck },
     { name: "Notifications", icon: Bell },
     { name: "Billing & Plans", icon: CreditCard },
@@ -869,22 +1046,35 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                           />
                         </div>
 
+                        {/* Gym UPI ID — members pay the owner directly (zero platform fee) */}
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label className="text-slate-600">Gym UPI ID</Label>
+                          <Input
+                            value={settings.upi_id ?? ""}
+                            onChange={(e) => persistSettings({ upi_id: e.target.value.trim() })}
+                            placeholder="gymname@ybl"
+                            inputMode="email"
+                            autoCapitalize="none"
+                            className="rounded-xl border-slate-200 bg-slate-50"
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Members pay fees & store items straight to this UPI ID — Gymphony takes
+                            <span className="font-semibold text-slate-600"> 0% fee</span>. Used to generate their payment QR.
+                          </p>
+                        </div>
+
                         <div className="space-y-2">
                           <Label className="text-slate-600">Opening Time</Label>
-                          <Input
-                            type="time"
+                          <TimePicker
                             value={settings.opening_time}
-                            onChange={(e) => persistSettings({ opening_time: e.target.value })}
-                            className="rounded-xl border-slate-200 bg-slate-50"
+                            onChange={(v) => persistSettings({ opening_time: v })}
                           />
                         </div>
                         <div className="space-y-2">
                           <Label className="text-slate-600">Closing Time</Label>
-                          <Input
-                            type="time"
+                          <TimePicker
                             value={settings.closing_time}
-                            onChange={(e) => persistSettings({ closing_time: e.target.value })}
-                            className="rounded-xl border-slate-200 bg-slate-50"
+                            onChange={(v) => persistSettings({ closing_time: v })}
                           />
                         </div>
 
@@ -898,6 +1088,54 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                           />
                         </div>
                       </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Legal & Compliance — required for payment-gateway approval */}
+                  <Card className="border-border bg-white shadow-soft">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-lg font-bold text-slate-900">
+                        <ShieldCheck className="h-5 w-5 text-primary" />
+                        Legal &amp; Compliance Links
+                      </CardTitle>
+                      <CardDescription>
+                        Required for payment-gateway approval. These links surface in the Member App &amp;
+                        checkout footer so members can review your policies before paying.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {(
+                        [
+                          { label: "Terms & Conditions URL", key: "terms_url", placeholder: "https://yourgym.com/terms" },
+                          { label: "Privacy Policy URL", key: "privacy_url", placeholder: "https://yourgym.com/privacy" },
+                          { label: "Cancellation & Refund Policy URL", key: "refund_url", placeholder: "https://yourgym.com/refunds" },
+                        ] as { label: string; key: keyof GymSettings; placeholder: string }[]
+                      ).map(({ label, key, placeholder }) => (
+                        <div key={key} className="space-y-2">
+                          <Label className="text-slate-600">{label}</Label>
+                          <Input
+                            type="url"
+                            inputMode="url"
+                            autoCapitalize="none"
+                            value={(settings[key] as string) ?? ""}
+                            onChange={(e) => persistSettings({ [key]: e.target.value.trim() })}
+                            onBlur={(e) =>
+                              setLegalErrors((prev) => ({ ...prev, [key]: !isValidUrl(e.target.value) }))
+                            }
+                            placeholder={placeholder}
+                            className={`rounded-xl bg-slate-50 ${
+                              legalErrors[key]
+                                ? "border-red-300 focus-visible:ring-red-300"
+                                : "border-slate-200"
+                            }`}
+                          />
+                          {legalErrors[key] && (
+                            <p className="text-xs font-medium text-red-500">
+                              Enter a valid URL, e.g. https://yourgym.com/terms
+                            </p>
+                          )}
+                        </div>
+                      ))}
                     </CardContent>
                   </Card>
 
@@ -972,7 +1210,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                         </Button>
                         <Button
                           variant="outline"
-                          onClick={() => toast.info("Click anywhere on the map to pin your gym.")}
+                          onClick={() => toast.info("Click to drop the pin, then drag it to fine-tune.")}
                           className="h-12 rounded-2xl border-slate-200 px-5 font-bold"
                         >
                           <MapPinned className="mr-2 h-4 w-4" />
@@ -1023,9 +1261,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                                 useMap: () => { setView: (c: [number, number], z: number, o: Record<string, unknown>) => void };
                                 useMapEvents: (handlers: Record<string, unknown>) => null;
                               };
-                              const L = lf.L as {
-                                divIcon: (opts: Record<string, unknown>) => unknown;
-                              };
+                              const markerIcon = (lf as { markerIcon?: unknown }).markerIcon;
 
                               function MapController() {
                                 const map = useMap();
@@ -1046,20 +1282,6 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                                 return null;
                               }
 
-                              const pinIcon = L.divIcon({
-                                className: "custom-div-icon",
-                                html: `<div style="
-                                  width:28px;height:40px;position:relative;
-                                "><div style="
-                                  width:28px;height:28px;border-radius:50% 50% 50% 0;
-                                  background:#8B5CF6;transform:rotate(-45deg);
-                                  box-shadow:0 2px 8px rgba(139,92,246,0.5);
-                                "></div></div>`,
-                                iconSize: [28, 40],
-                                iconAnchor: [14, 40],
-                                popupAnchor: [0, -42],
-                              });
-
                               return (
                                 <>
                                   <MapController />
@@ -1067,7 +1289,14 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                                   {locationDraft.latitude !== null && locationDraft.longitude !== null && (
                                     <Marker
                                       position={[locationDraft.latitude, locationDraft.longitude]}
-                                      icon={pinIcon}
+                                      icon={markerIcon}
+                                      draggable
+                                      eventHandlers={{
+                                        dragend: (e: { target: { getLatLng: () => { lat: number; lng: number } } }) => {
+                                          const pos = e.target.getLatLng();
+                                          pickLocation(pos.lat, pos.lng);
+                                        },
+                                      }}
                                     >
                                       <Popup>
                                         <div className="space-y-1">
@@ -1086,32 +1315,78 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                         </div>
                       </div>
 
-                      {/* Coordinates display */}
+                      {/* Coordinates — editable; typing moves the pin, dragging the pin fills these */}
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
                           <Label className="text-slate-600">Latitude</Label>
                           <Input
-                            value={locationDraft.latitude !== null ? locationDraft.latitude.toFixed(6) : ""}
-                            disabled
-                            placeholder="Pick a point on the map"
-                            className="rounded-xl border-slate-200 bg-slate-50 text-slate-900"
+                            inputMode="decimal"
+                            value={latInput}
+                            onChange={(e) => handleLatInput(e.target.value)}
+                            placeholder="e.g. 27.897520"
+                            className="rounded-xl border-slate-200 bg-white text-slate-900"
                           />
                         </div>
                         <div className="space-y-2">
                           <Label className="text-slate-600">Longitude</Label>
                           <Input
-                            value={locationDraft.longitude !== null ? locationDraft.longitude.toFixed(6) : ""}
-                            disabled
-                            placeholder="Pick a point on the map"
-                            className="rounded-xl border-slate-200 bg-slate-50 text-slate-900"
+                            inputMode="decimal"
+                            value={lngInput}
+                            onChange={(e) => handleLngInput(e.target.value)}
+                            placeholder="e.g. 78.088012"
+                            className="rounded-xl border-slate-200 bg-white text-slate-900"
                           />
                         </div>
                       </div>
 
+                      {/* Check-in radius — the geo-fence each member must be within (per gym) */}
+                      <div className="space-y-2">
+                        <Label className="text-slate-600">Check-in radius (metres)</Label>
+                        <Input
+                          inputMode="numeric"
+                          type="number"
+                          min={20}
+                          max={2000}
+                          value={settings.checkin_radius_m ?? 100}
+                          onChange={(e) =>
+                            setSettings((prev) => ({
+                              ...prev,
+                              checkin_radius_m: toFiniteNumber(e.target.value) ?? prev.checkin_radius_m,
+                            }))
+                          }
+                          placeholder="100"
+                          className="rounded-xl border-slate-200 bg-white text-slate-900"
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                          How close (20–2000&nbsp;m) a member must be to check in. Lower is stricter, but
+                          phone GPS is often off by 20–50&nbsp;m indoors, so very low values cause failed check-ins.
+                        </p>
+                      </div>
+
+                      {/* Why this matters — ties the location to Wall QR check-ins */}
+                      {locationDraft.latitude === null || locationDraft.longitude === null ? (
+                        <div className="flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                          <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
+                          <span>
+                            <strong>Location not set.</strong> Members can't use Wall QR check-in until you
+                            pin your gym here — it geo-fences check-ins to people physically on-site
+                            (within {settings.checkin_radius_m ?? 100}&nbsp;m).
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-start gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+                          <Crosshair className="mt-0.5 h-4 w-4 shrink-0" />
+                          <span>
+                            This location powers <strong>Wall QR check-in</strong>. Members scanning your printed QR
+                            must be within <strong>{settings.checkin_radius_m ?? 100}&nbsp;m</strong> of this pin to check in.
+                          </span>
+                        </div>
+                      )}
+
                       <div className="flex flex-col gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 md:flex-row md:items-center md:justify-between">
                         <div className="space-y-1">
                           <p className="text-sm font-semibold text-slate-900">Need a quick adjustment?</p>
-                          <p className="text-xs text-muted-foreground">Click anywhere on the map to move the pin.</p>
+                          <p className="text-xs text-muted-foreground">Click the map, drag the pin, or type exact coordinates above.</p>
                         </div>
                         <Button
                           onClick={saveLocation}
@@ -1200,6 +1475,35 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                 </>
               )}
 
+              {/* ── WALL QR ─────────────────────────────────────────────────── */}
+              {activeCategory === "Wall QR" && (
+                <div className="space-y-6">
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    <WallQRTab
+                      gymId={gymId}
+                      gymName={settings.gym_name}
+                      hasLocation={settings.latitude != null && settings.longitude != null}
+                    />
+                    <GymJoinQRCode gymId={gymId} gymName={settings.gym_name} />
+                  </div>
+                  <Card className="border-border bg-white shadow-soft">
+                    <CardContent className="flex items-center justify-between gap-4 p-5">
+                      <div className="space-y-0.5">
+                        <p className="text-sm font-bold text-slate-900">Online payments (demo gateway)</p>
+                        <p className="text-xs text-muted-foreground">
+                          Let members self-activate instantly via "Pay Online". Leave OFF until a real
+                          gateway is connected — otherwise approve payments manually.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={settings.allow_mock_payments}
+                        onCheckedChange={(checked) => persistSettings({ allow_mock_payments: checked })}
+                      />
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+
               {/* ── SECURITY ────────────────────────────────────────────────── */}
               {activeCategory === "Security" && (
                 <Card className="border-border bg-white shadow-soft">
@@ -1215,8 +1519,16 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                       <p className="text-center text-sm text-slate-600">
                         A reset link will be sent to <strong>{settings.owner_email}</strong>.
                       </p>
-                      <Button onClick={handlePasswordReset} className="h-12 w-full rounded-xl bg-slate-900 font-bold text-white shadow-lg">
-                        Send Reset Link
+                      <Button
+                        onClick={handlePasswordReset}
+                        disabled={isResettingPassword}
+                        className="h-12 w-full rounded-xl bg-slate-900 font-bold text-white shadow-lg disabled:opacity-70"
+                      >
+                        {isResettingPassword ? (
+                          <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Sending…</>
+                        ) : (
+                          "Send Reset Link"
+                        )}
                       </Button>
                     </div>
                   </CardContent>
@@ -1225,13 +1537,37 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
 
               {/* ── NOTIFICATIONS ───────────────────────────────────────────── */}
               {activeCategory === "Notifications" && (
-                <Card className="border-border bg-white py-20 shadow-soft">
-                  <CardContent className="space-y-3 text-center">
-                    <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
-                      <Settings className="h-6 w-6 animate-spin-slow" />
+                <Card className="border-border bg-white shadow-soft">
+                  <CardHeader>
+                    <div className="flex items-center gap-3">
+                      <Bell className="h-5 w-5 text-primary" />
+                      <CardTitle className="text-lg font-bold text-slate-900">Notification Preferences</CardTitle>
                     </div>
-                    <h3 className="font-bold text-slate-900">Notifications — Coming Soon</h3>
-                    <p className="text-sm text-muted-foreground">We're fine-tuning these settings for you.</p>
+                    <CardDescription>Choose which alerts you receive on your dashboard.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {(
+                      [
+                        { key: "notify_new_member", label: "Alert on New Member Signup", desc: "Get notified when a new member joins your gym." },
+                        { key: "notify_pending_payment", label: "Alert on Pending UPI Payments", desc: "Know the moment a member submits a UPI payment to approve." },
+                        { key: "notify_low_stock", label: "Low Stock / Inventory Alerts", desc: "Be warned when a store product is running low." },
+                      ] as { key: keyof GymSettings; label: string; desc: string }[]
+                    ).map(({ key, label, desc }, i) => (
+                      <div key={key}>
+                        {i > 0 && <div className="mb-4 h-px bg-slate-100" />}
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="space-y-0.5">
+                            <Label className="font-medium text-slate-900">{label}</Label>
+                            <p className="text-xs text-muted-foreground">{desc}</p>
+                          </div>
+                          <Switch
+                            checked={Boolean(settings[key])}
+                            onCheckedChange={(checked) => persistSettings({ [key]: checked })}
+                            className="data-[state=checked]:bg-primary"
+                          />
+                        </div>
+                      </div>
+                    ))}
                   </CardContent>
                 </Card>
               )}
@@ -1251,10 +1587,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                     <div className="mx-auto flex max-w-xs flex-col gap-3">
                       {hasAccess(settings.plan_type, "whatsapp_support") ? (
                         <Button
-                          onClick={() => {
-                            const phone = settings.contact_number.replace(/\D/g, "") || "7906240659";
-                            window.open(`https://wa.me/${phone}?text=${encodeURIComponent("Hi, I need support with my gym dashboard.")}`, "_blank");
-                          }}
+                          onClick={() => window.open(SUPPORT_WHATSAPP_URL, "_blank", "noopener,noreferrer")}
                           className="rounded-xl bg-primary px-8 font-bold text-white shadow-lg shadow-primary/20"
                         >
                           Chat on WhatsApp
@@ -1307,7 +1640,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                     </div>
                     {settings.plan_type !== "Pro" && (
                       <Button
-                        onClick={handleGetPro}
+                        onClick={mockSaaSCheckout}
                         disabled={isProcessingBilling}
                         className="h-12 rounded-xl bg-primary px-6 font-black text-white shadow-glow"
                       >
@@ -1369,11 +1702,15 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                       </CardHeader>
                       <CardContent className="pt-0">
                         {settings.plan_type === "Pro" ? (
-                          <Button onClick={() => toast.info("Subscription management coming soon!")} className="h-14 w-full rounded-full bg-white font-black text-slate-900 shadow-xl">
-                            Active Subscription
+                          <Button
+                            onClick={mockSaaSCheckout}
+                            disabled={isProcessingBilling}
+                            className="h-14 w-full rounded-full bg-white font-black text-slate-900 shadow-xl"
+                          >
+                            {isProcessingBilling ? <Loader2 className="h-5 w-5 animate-spin text-slate-900" /> : "Active Subscription"}
                           </Button>
                         ) : (
-                          <Button onClick={handleGetPro} disabled={isProcessingBilling} className="h-14 w-full rounded-full bg-primary text-lg font-black text-white">
+                          <Button onClick={mockSaaSCheckout} disabled={isProcessingBilling} className="h-14 w-full rounded-full bg-primary text-lg font-black text-white">
                             {isProcessingBilling ? <Loader2 className="h-5 w-5 animate-spin" /> : "Get Pro"}
                           </Button>
                         )}
@@ -1462,9 +1799,14 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                             <div className="mt-4 flex justify-end">
                               <Button
                                 onClick={editingPlan ? handleUpdatePlan : handleAddPlan}
+                                disabled={isSavingPlan}
                                 className="rounded-xl bg-gradient-brand px-6 font-bold text-primary-foreground"
                               >
-                                {editingPlan ? "Update Plan" : "Add Plan"}
+                                {isSavingPlan ? (
+                                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" />{editingPlan ? "Updating…" : "Adding…"}</>
+                                ) : (
+                                  editingPlan ? "Update Plan" : "Add Plan"
+                                )}
                               </Button>
                             </div>
                           </motion.div>
@@ -1504,8 +1846,14 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                                 <Button variant="ghost" size="icon" onClick={() => startEditing(plan)} className="h-9 w-9 rounded-xl text-muted-foreground hover:bg-primary/5 hover:text-primary">
                                   <Edit2 className="h-4 w-4" />
                                 </Button>
-                                <Button variant="ghost" size="icon" onClick={() => handleDeletePlan(plan.id)} className="h-9 w-9 rounded-xl text-muted-foreground hover:bg-red-50 hover:text-red-500">
-                                  <Trash2 className="h-4 w-4" />
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => handleDeletePlan(plan.id, plan.name)}
+                                  disabled={deletingPlanId === plan.id}
+                                  className="h-9 w-9 rounded-xl text-muted-foreground hover:bg-red-50 hover:text-red-500"
+                                >
+                                  {deletingPlanId === plan.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                                 </Button>
                               </div>
                             </div>

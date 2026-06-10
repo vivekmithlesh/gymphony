@@ -6,7 +6,7 @@ export function Footer() {
   return (
     <footer className="border-t border-border bg-card">
       <div className="mx-auto max-w-7xl px-6 py-16">
-        <div className="grid gap-12 md:grid-cols-4">
+        <div className="grid gap-12 md:grid-cols-5">
           <div className="md:col-span-2">
             <Link to="/">
               <Logo />
@@ -56,6 +56,15 @@ export function Footer() {
               <li><a href="#cta" className="hover:text-primary">Contact</a></li>
               <li><a href="#cta" className="hover:text-primary">Book Demo</a></li>
               <li><a href="#cta" className="hover:text-primary">Free Trial</a></li>
+            </ul>
+          </div>
+
+          <div>
+            <h4 className="text-sm font-semibold">Legal</h4>
+            <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
+              <li><Link to="/terms" className="hover:text-primary">Terms &amp; Conditions</Link></li>
+              <li><Link to="/privacy" className="hover:text-primary">Privacy Policy</Link></li>
+              <li><Link to="/refund" className="hover:text-primary">Cancellation &amp; Refund Policy</Link></li>
             </ul>
           </div>
         </div>

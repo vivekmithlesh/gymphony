@@ -9,6 +9,14 @@ create table if not exists public.reviews (
   created_at timestamptz not null default now()
 );
 
+-- Existing installs: the reviews table may pre-date this schema and be missing
+-- columns (e.g. member_id). Patch them in idempotently before indexing/policies.
+alter table public.reviews add column if not exists member_id  uuid;
+alter table public.reviews add column if not exists gym_id     uuid;
+alter table public.reviews add column if not exists rating     integer;
+alter table public.reviews add column if not exists comment    text;
+alter table public.reviews add column if not exists created_at timestamptz default now();
+
 create index if not exists reviews_gym_id_created_at_idx
   on public.reviews (gym_id, created_at desc);
 

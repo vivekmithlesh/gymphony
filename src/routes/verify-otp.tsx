@@ -30,7 +30,7 @@ function VerifyOtpPage() {
     e.preventDefault();
     // In a real app, we'd verify the OTP here
     // For now, we'll just navigate to the dashboard
-    navigate({ to: "/dashboard" });
+    navigate({ to: "/dashboard", search: { tab: undefined, section: undefined } });
   };
 
   return (

@@ -1,7 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+export const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+// True only when both env vars are present (evaluated before the hard guard below).
+export const hasSupabaseConfig = Boolean(supabaseUrl && supabaseAnonKey);
 
 // Strict Business-grade Guard: Production par immediately fail ho agar keys missing hon
 if (!supabaseUrl || !supabaseAnonKey) {

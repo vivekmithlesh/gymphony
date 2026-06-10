@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { motion } from "framer-motion";
+import { LegalLinksFooter } from "@/components/LegalLinksFooter";
 import {
   ChevronLeft,
   ChevronRight,
@@ -11,6 +12,8 @@ import {
   Share2,
   Flame,
   Users,
+  LogIn,
+  ImageOff,
   CircleDashed,
   CheckCircle2,
 } from "lucide-react";
@@ -20,6 +23,8 @@ import { supabase } from "@/supabase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useGymLiveStats } from "@/hooks/useGymLiveStats";
 
 interface GymDetail {
   id: string;
@@ -37,6 +42,9 @@ interface GymDetail {
   total_calories?: number;
   active_members?: number;
   description?: string;
+  terms_url?: string | null;
+  privacy_url?: string | null;
+  refund_url?: string | null;
 }
 
 export function GymDetailView({ gymId, memberId }: { gymId: string; memberId?: string }) {
@@ -44,8 +52,12 @@ export function GymDetailView({ gymId, memberId }: { gymId: string; memberId?: s
   const [gym, setGym] = useState<GymDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
+  const [photoLoaded, setPhotoLoaded] = useState(false);
   const [memberGymId, setMemberGymId] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState(false);
+
+  // Live "today" community stats, kept fresh via Supabase realtime + polling.
+  const { stats, isLoading: statsLoading } = useGymLiveStats(gymId);
 
   // ✅ Fetch gym details
   useEffect(() => {
@@ -200,12 +212,13 @@ export function GymDetailView({ gymId, memberId }: { gymId: string; memberId?: s
     }
   }, []);
 
-  const nextPhoto = () => {
-    setCurrentPhotoIndex((prev) => (prev + 1) % Math.max(photos.length, 1));
+  const goToPhoto = (next: number) => {
+    const count = Math.max(photos.length, 1);
+    setPhotoLoaded(false);
+    setCurrentPhotoIndex(((next % count) + count) % count);
   };
-  const prevPhoto = () => {
-    setCurrentPhotoIndex((prev) => (prev - 1 + Math.max(photos.length, 1)) % Math.max(photos.length, 1));
-  };
+  const nextPhoto = () => goToPhoto(currentPhotoIndex + 1);
+  const prevPhoto = () => goToPhoto(currentPhotoIndex - 1);
 
   if (isLoading) {
     return (
@@ -242,46 +255,86 @@ export function GymDetailView({ gymId, memberId }: { gymId: string; memberId?: s
           Back to Leaderboard
         </Button>
 
-        {/* ✅ PHOTO CAROUSEL */}
+        {/* ✅ PHOTO CAROUSEL — skeleton while each frame decodes, premium empty state */}
         <Card className="rounded-3xl border-slate-200 bg-white shadow-sm overflow-hidden mb-6">
-          <div className="relative h-96 w-full bg-slate-100">
+          <div className="relative h-96 w-full overflow-hidden bg-slate-100">
             {photos.length > 0 ? (
-              <motion.img
-                key={currentPhotoIndex}
-                src={photoUrl}
-                alt={`${gym.gym_name} - Photo ${currentPhotoIndex + 1}`}
-                className="h-full w-full object-cover"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.3 }}
-              />
+              <>
+                {/* Shimmer skeleton stays until the active frame finishes loading */}
+                {!photoLoaded && (
+                  <div className="absolute inset-0 z-10">
+                    <Skeleton className="h-full w-full rounded-none bg-slate-200/80" />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <CircleDashed className="h-8 w-8 animate-spin text-slate-400" />
+                    </div>
+                  </div>
+                )}
+                <motion.img
+                  key={currentPhotoIndex}
+                  src={photoUrl}
+                  alt={`${gym.gym_name} - Photo ${currentPhotoIndex + 1}`}
+                  onLoad={() => setPhotoLoaded(true)}
+                  onError={() => setPhotoLoaded(true)}
+                  className="h-full w-full object-cover"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: photoLoaded ? 1 : 0 }}
+                  transition={{ duration: 0.4 }}
+                />
+                {/* Subtle gradient so overlaid controls stay legible */}
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-linear-to-t from-black/35 to-transparent" />
+              </>
             ) : (
-              <div className="flex h-full items-center justify-center">
-                <div className="text-center">
-                  <Flame className="mx-auto h-12 w-12 text-slate-300 mb-2" />
-                  <p className="text-slate-400">No photos available</p>
+              /* "No photos available" — skeleton tiles + clear empty state */
+              <div className="absolute inset-0">
+                <div className="grid h-full grid-cols-3 gap-2 p-2 opacity-60">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <Skeleton key={i} className="h-full w-full rounded-2xl bg-slate-200/80" />
+                  ))}
+                </div>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="rounded-2xl bg-white/80 px-6 py-5 text-center shadow-sm backdrop-blur-sm">
+                    <ImageOff className="mx-auto mb-2 h-10 w-10 text-slate-300" />
+                    <p className="font-semibold text-slate-500">No photos available</p>
+                    <p className="text-xs text-slate-400">This gym hasn&apos;t added photos yet</p>
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* Navigation Arrows */}
+            {/* Navigation Arrows + dot indicators */}
             {photos.length > 1 && (
               <>
                 <button
                   onClick={prevPhoto}
-                  className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/80 p-2 shadow-lg hover:bg-white transition"
+                  aria-label="Previous photo"
+                  className="absolute left-4 top-1/2 z-20 -translate-y-1/2 rounded-full bg-white/80 p-2 shadow-lg backdrop-blur-sm transition hover:scale-105 hover:bg-white"
                 >
                   <ChevronLeft className="h-5 w-5 text-slate-900" />
                 </button>
                 <button
                   onClick={nextPhoto}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/80 p-2 shadow-lg hover:bg-white transition"
+                  aria-label="Next photo"
+                  className="absolute right-4 top-1/2 z-20 -translate-y-1/2 rounded-full bg-white/80 p-2 shadow-lg backdrop-blur-sm transition hover:scale-105 hover:bg-white"
                 >
                   <ChevronRight className="h-5 w-5 text-slate-900" />
                 </button>
 
+                {/* Dot indicators */}
+                <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5">
+                  {photos.map((_, i) => (
+                    <button
+                      key={i}
+                      onClick={() => goToPhoto(i)}
+                      aria-label={`Go to photo ${i + 1}`}
+                      className={`h-1.5 rounded-full transition-all ${
+                        i === currentPhotoIndex ? "w-6 bg-white" : "w-1.5 bg-white/60 hover:bg-white/80"
+                      }`}
+                    />
+                  ))}
+                </div>
+
                 {/* Photo Count */}
-                <div className="absolute bottom-4 right-4 rounded-full bg-black/60 px-3 py-1 text-xs font-semibold text-white">
+                <div className="absolute bottom-4 right-4 z-20 rounded-full bg-black/60 px-3 py-1 text-xs font-semibold text-white backdrop-blur-sm">
                   {currentPhotoIndex + 1} / {photos.length}
                 </div>
               </>
@@ -390,29 +443,64 @@ export function GymDetailView({ gymId, memberId }: { gymId: string; memberId?: s
 
           {/* Right Column: Stats & Join */}
           <div className="space-y-6">
-            {/* ✅ LIVE COMMUNITY STATS */}
+            {/* ✅ LIVE COMMUNITY STATS — real-time via useGymLiveStats */}
             <Card className="rounded-3xl border-slate-200 bg-white shadow-sm">
               <CardHeader className="p-6 pb-3">
-                <CardTitle className="text-lg font-bold text-slate-900">Today's Stats</CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg font-bold text-slate-900">Today's Stats</CardTitle>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-emerald-600 ring-1 ring-emerald-200">
+                    <span className="relative flex h-2 w-2">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                      <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                    </span>
+                    Live
+                  </span>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4 px-6 pb-6">
                 {/* Total Calories */}
-                <div className="rounded-2xl bg-gradient-to-br from-orange-50 to-orange-50/50 p-4 border border-orange-100">
+                <div className="rounded-2xl bg-linear-to-br from-orange-50 to-orange-50/50 p-4 border border-orange-100">
                   <div className="flex items-center gap-2 mb-1">
                     <Flame className="h-5 w-5 text-orange-500" />
                     <p className="text-xs font-bold uppercase tracking-wide text-orange-700">Total Calories</p>
                   </div>
-                  <p className="text-2xl font-bold text-orange-900">{(gym.total_calories || 0).toLocaleString()}</p>
+                  {statsLoading ? (
+                    <Skeleton className="h-8 w-24 bg-orange-200/60" />
+                  ) : (
+                    <p className="text-2xl font-bold text-orange-900 tabular-nums">
+                      {stats.todayCalories.toLocaleString()}
+                    </p>
+                  )}
                 </div>
 
-                {/* Active Members */}
-                <div className="rounded-2xl bg-gradient-to-br from-blue-50 to-blue-50/50 p-4 border border-blue-100">
+                {/* Active Today */}
+                <div className="rounded-2xl bg-linear-to-br from-blue-50 to-blue-50/50 p-4 border border-blue-100">
                   <div className="flex items-center gap-2 mb-1">
                     <Users className="h-5 w-5 text-blue-500" />
                     <p className="text-xs font-bold uppercase tracking-wide text-blue-700">Active Today</p>
                   </div>
-                  <p className="text-2xl font-bold text-blue-900">{gym.active_members || 0}</p>
-                  <p className="text-xs text-blue-600 mt-1">members logged in</p>
+                  {statsLoading ? (
+                    <Skeleton className="h-8 w-16 bg-blue-200/60" />
+                  ) : (
+                    <p className="text-2xl font-bold text-blue-900 tabular-nums">{stats.activeToday.toLocaleString()}</p>
+                  )}
+                  <p className="text-xs text-blue-600 mt-1">members training now</p>
+                </div>
+
+                {/* Members Logged In (checked in today) */}
+                <div className="rounded-2xl bg-linear-to-br from-purple-50 to-purple-50/50 p-4 border border-purple-100">
+                  <div className="flex items-center gap-2 mb-1">
+                    <LogIn className="h-5 w-5 text-purple-500" />
+                    <p className="text-xs font-bold uppercase tracking-wide text-purple-700">Members Logged In</p>
+                  </div>
+                  {statsLoading ? (
+                    <Skeleton className="h-8 w-16 bg-purple-200/60" />
+                  ) : (
+                    <p className="text-2xl font-bold text-purple-900 tabular-nums">
+                      {stats.membersLoggedIn.toLocaleString()}
+                    </p>
+                  )}
+                  <p className="text-xs text-purple-600 mt-1">checked in today</p>
                 </div>
               </CardContent>
             </Card>
@@ -494,6 +582,14 @@ export function GymDetailView({ gymId, memberId }: { gymId: string; memberId?: s
             </CardContent>
           </Card>
         )}
+
+        {/* Legal & compliance footer — public-facing policies for gateway review. */}
+        <LegalLinksFooter
+          termsUrl={gym.terms_url}
+          privacyUrl={gym.privacy_url}
+          refundUrl={gym.refund_url}
+          className="mt-10 border-t border-slate-200 pt-6"
+        />
       </div>
     </div>
   );
