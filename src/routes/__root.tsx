@@ -1,8 +1,8 @@
 import { Outlet, Link, createRootRoute, HeadContent, Scripts, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Toaster } from "sonner";
-import { useEffect, useState } from "react";
-import { supabase } from "@/supabase";
-import { getDashboardPathForRole, resolveUserRole } from "@/lib/auth-role";
+import { useEffect } from "react";
+import { getDashboardPathForRole } from "@/lib/auth-role";
+import { AuthProvider, useAuth } from "@/lib/auth-context";
 
 import appCss from "../styles.css?url";
 
@@ -67,79 +67,76 @@ function RootShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function RootComponent() {
+// Cross-cutting redirect rules — the single source of truth for "where should
+// this session be allowed". Reads the shared auth context (no per-navigation
+// re-subscribe), and reacts to both auth changes and route changes.
+function AuthRedirects() {
   const navigate = useNavigate();
   const routerState = useRouterState();
-  const [session, setSession] = useState<any>(null);
-  const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const { session, role, isLoading, roleResolved } = useAuth();
+
+  const currentPath = routerState.location.pathname;
 
   useEffect(() => {
-    const handleRedirects = async (currentSession: any, currentPath: string) => {
-      const isOwnerAuthPage = currentPath === "/signup" || currentPath === "/login";
-      const isMemberAuthPage = currentPath === "/member-login";
-      const isOwnerProtected = currentPath.startsWith("/dashboard") || currentPath === "/city-leaderboard" || currentPath === "/kiosk" || currentPath === "/kiosk-mode";
-      const isMemberProtected = currentPath.startsWith("/member-dashboard");
-      const isLandingPage = currentPath === "/";
+    if (isLoading) return;
 
-      if (currentSession) {
-        const role = await resolveUserRole(currentSession.user);
+    const isOwnerAuthPage = currentPath === "/signup" || currentPath === "/login";
+    const isMemberAuthPage = currentPath === "/member-login";
+    const isOwnerProtected =
+      currentPath.startsWith("/dashboard") ||
+      currentPath === "/city-leaderboard" ||
+      currentPath === "/kiosk" ||
+      currentPath === "/kiosk-mode";
+    const isMemberProtected = currentPath.startsWith("/member-dashboard");
+    const isLandingPage = currentPath === "/";
 
-        if (role === "member") {
-          const target = getDashboardPathForRole(role);
-          if (isOwnerAuthPage || isMemberAuthPage || isOwnerProtected || isLandingPage) {
-            console.log("Auth: Redirecting member to member-dashboard");
-            navigate({ to: target, replace: true });
-          }
-        } else if (role === "owner") {
-          const target = getDashboardPathForRole(role);
-          if (isOwnerAuthPage || isMemberAuthPage || isMemberProtected || isLandingPage) {
-            console.log("Auth: Redirecting owner to dashboard");
-            navigate({ to: target, replace: true });
-          }
+    if (session) {
+      // Wait for role to settle before deciding owner-vs-member destinations.
+      if (!roleResolved) return;
+
+      if (role === "member") {
+        const target = getDashboardPathForRole(role);
+        if (isOwnerAuthPage || isMemberAuthPage || isOwnerProtected || isLandingPage) {
+          navigate({ to: target, replace: true });
         }
-      } else {
-        if (isOwnerProtected) {
-          console.log("Auth: Redirecting logged-out user to login");
-          navigate({ to: "/login", replace: true });
-        } else if (isMemberProtected) {
-          console.log("Auth: Redirecting logged-out member to member-login");
-          navigate({ to: "/member-login", replace: true });
+      } else if (role === "owner") {
+        const target = getDashboardPathForRole(role);
+        if (isOwnerAuthPage || isMemberAuthPage || isMemberProtected || isLandingPage) {
+          navigate({ to: target, replace: true });
         }
       }
-    };
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setIsAuthChecking(false);
-      void handleRedirects(session, routerState.location.pathname);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      setSession(session);
-      
-      if (event === 'SIGNED_IN' && session) {
-        void (async () => {
-          const role = await resolveUserRole(session.user);
-          if (role === "member" || role === "owner") {
-            const target = getDashboardPathForRole(role);
-            console.log(`Auth: SIGNED_IN detected, navigating to ${target}`);
-            navigate({ to: target, replace: true });
-          }
-        })();
-      } else {
-        void handleRedirects(session, routerState.location.pathname);
+    } else {
+      if (isOwnerProtected) {
+        navigate({ to: "/login", replace: true });
+      } else if (isMemberProtected) {
+        navigate({ to: "/member-login", replace: true });
       }
-    });
+    }
+  }, [session, role, isLoading, roleResolved, currentPath, navigate]);
 
-    return () => subscription.unsubscribe();
-  }, [navigate, routerState.location.pathname]);
+  return null;
+}
 
-  if (isAuthChecking) return null;
+function RootContent() {
+  const { isLoading } = useAuth();
+
+  // Block the first paint until the session check resolves — prevents the
+  // logged-out-then-logged-in flicker (parity with the old isAuthChecking gate).
+  if (isLoading) return null;
 
   return (
     <>
+      <AuthRedirects />
       <Outlet />
       <Toaster position="bottom-center" richColors />
     </>
+  );
+}
+
+function RootComponent() {
+  return (
+    <AuthProvider>
+      <RootContent />
+    </AuthProvider>
   );
 }

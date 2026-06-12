@@ -5,6 +5,7 @@ import { Crown, Lock, X, Sparkles, CheckCircle2, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { supabase } from '@/supabase';
+import { useAuth } from '@/lib/auth-context';
 import { handleStripeCheckout } from './StripeProvider';
 import { initiatePhonePePayment, finalizeUpgrade as finalizePhonePeUpgrade } from '@/lib/phonepe';
 
@@ -27,6 +28,7 @@ export const FeatureLock: React.FC<FeatureLockProps> = ({
   const [showPricing, setShowPricing] = React.useState(false);
   const [isProcessing, setIsProcessing] = React.useState(false);
   const [currency, setCurrency] = React.useState<'INR' | 'USD'>('INR');
+  const { user } = useAuth();
 
   const isPro = true; // planType === 'Pro'; // Temporarily disabled for customer demo
 
@@ -39,7 +41,6 @@ export const FeatureLock: React.FC<FeatureLockProps> = ({
   };
 
   const handlePhonePe = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
     await initiatePhonePePayment(
@@ -60,7 +61,6 @@ export const FeatureLock: React.FC<FeatureLockProps> = ({
 
   const finalizeUpgrade = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("User not found");
 
       const thirtyDaysFromNow = new Date();

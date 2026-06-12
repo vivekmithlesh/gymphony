@@ -1,7 +1,29 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(npx tsc --noEmit 2>&1)"
+      "PowerShell(npx tsc --noEmit 2>&1)",
+      "Bash(xargs wc -l)",
+      "PowerShell(npx eslint src/components/SettingsView.tsx src/components/KioskMode.tsx 2>&1 | Select-Object -First 40)",
+      "Bash(supabase --version)",
+      "PowerShell(Set-Clipboard *)",
+      "Bash(git commit *)",
+      "Bash(git add *)",
+      "Bash(rm .git/GYMPHONY_COMMITMSG.tmp)",
+      "Bash(git --no-pager show --stat --format=\"\" HEAD)",
+      "PowerShell(npm run *)",
+      "Skill(run)",
+      "Bash(curl -s --compressed http://localhost:8080/)",
+      "Bash(curl -s --compressed http://localhost:8080/dashboard)",
+      "Bash(curl -s -o /dev/null -w \"status=%{http_code}\\\\n\" http://localhost:8081/dashboard)",
+      "Bash(curl -s -o /dev/null -w \"status=%{http_code}\\\\n\" http://localhost:8081/member-dashboard)",
+      "Bash(curl -s --compressed http://localhost:8081/dashboard)",
+      "Bash(git log *)",
+      "PowerShell(npx tsc --noEmit)",
+      "PowerShell(npx eslint src/lib/debounce.ts src/routes/dashboard.tsx src/components/RevenueView.tsx src/components/AttendanceHeatmap.tsx src/components/MembersList.tsx 2>&1 | Select-Object -Last 80)",
+      "PowerShell(npx eslint --rule '{\\\\\"prettier/prettier\\\\\":\\\\\"off\\\\\",\\\\\"@typescript-eslint/no-explicit-any\\\\\":\\\\\"off\\\\\"}' src/lib/debounce.ts src/routes/dashboard.tsx src/components/RevenueView.tsx src/components/AttendanceHeatmap.tsx src/components/MembersList.tsx 2>&1 | Select-Object -Last 40)",
+      "PowerShell(npm test *)",
+      "PowerShell(npx eslint --rule '{\\\\\"prettier/prettier\\\\\":\\\\\"off\\\\\",\\\\\"@typescript-eslint/no-explicit-any\\\\\":\\\\\"off\\\\\"}' src/lib/auth-context.tsx src/components/ProtectedRoute.tsx src/routes/__root.tsx src/routes/login.tsx src/routes/member-login.tsx src/routes/signup.tsx 2>&1 | Select-Object -Last 40)",
+      "PowerShell(npx eslint --rule '{\\\\\"prettier/prettier\\\\\":\\\\\"off\\\\\",\\\\\"@typescript-eslint/no-explicit-any\\\\\":\\\\\"off\\\\\",\\\\\"react-hooks/exhaustive-deps\\\\\":\\\\\"off\\\\\"}' src/components/AttendanceView.tsx src/components/KioskMode.tsx src/components/RetentionWidget.tsx src/components/WhatsAppBotWidget.tsx src/components/InventoryManager.tsx src/components/FeatureLock.tsx src/components/ProFeatureGuard.tsx src/components/ProfileSettings.tsx src/components/CityLeaderboard.tsx src/components/SettingsView.tsx src/components/AttendanceHeatmap.tsx src/components/MembersList.tsx src/components/RevenueView.tsx src/components/ProtectedProRoute.tsx src/routes/dashboard.tsx src/routes/gym-detail.`$gymId.tsx src/member-dashboard.tsx 2>&1 | Select-Object -Last 40)"
     ]
   }
 }

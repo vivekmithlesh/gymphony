@@ -14,6 +14,7 @@ import {
   Settings
 } from "lucide-react";
 import { supabase } from "@/supabase";
+import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -39,12 +40,12 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [isUploading, setIsUploadingAvatar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { user } = useAuth();
 
   // Initial Fetch: Load real data from Supabase
   useEffect(() => {
     const fetchProfile = async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
 
         const { data, error } = await supabase
@@ -69,7 +70,7 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
     };
 
     fetchProfile();
-  }, []);
+  }, [user?.id]);
 
   // Sync state if props change (fallback)
   useEffect(() => {
@@ -81,8 +82,6 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
   }, [initialMember, isLoading]);
 
   const handleUpdateProfile = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    
     if (!user?.id) {
       console.log("UPDATE FAILED: No active session found.");
       toast.error("Session Expired", {

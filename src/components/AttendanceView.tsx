@@ -18,6 +18,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { toast } from "sonner";
 import { BackButton } from "./BackButton";
 import { supabase } from "@/supabase";
+import { useAuth } from "@/lib/auth-context";
 
 interface Member {
   id: string;
@@ -61,6 +62,7 @@ export function AttendanceView() {
 
   const checkInsControllerRef = useRef<AbortController | null>(null);
   const workoutLogsControllerRef = useRef<AbortController | null>(null);
+  const { user } = useAuth();
 
   // Initialize: Wait for Auth and then Fetch members
   useEffect(() => {
@@ -68,12 +70,11 @@ export function AttendanceView() {
     
     const initialize = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user && !controller.signal.aborted) {
+        if (user?.id && !controller.signal.aborted) {
           const { data: gymData, error: gymError } = await supabase
             .from("gym_settings")
             .select("id")
-            .eq("gym_owner_id", session.user.id)
+            .eq("gym_owner_id", user.id)
             .maybeSingle();
 
           if (gymError) {

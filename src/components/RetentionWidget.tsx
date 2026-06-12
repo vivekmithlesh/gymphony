@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/supabase';
+import { useAuth } from '@/lib/auth-context';
 import { AlertCircle, AlertTriangle, Bell } from 'lucide-react';
 import { toast } from 'sonner';
 import { cleanPhoneInput, isValidInternationalPhone, phoneForWaMe } from '@/lib/phone';
@@ -25,6 +26,7 @@ export default function RetentionWidget() {
   const [isLoading, setIsLoading] = useState(true);
   const retentionControllerRef = useRef<AbortController | null>(null);
   const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const { user } = useAuth();
 
   useEffect(() => {
     calculateRetention();
@@ -55,8 +57,7 @@ export default function RetentionWidget() {
 
     setIsLoading(true);
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const ownerId = sessionData.session?.user?.id;
+      const ownerId = user?.id;
 
       if (!ownerId) {
         setRiskyMembers([]);
@@ -220,7 +221,7 @@ export default function RetentionWidget() {
   // Clean skeleton loader while data + risk calculations run.
   if (isLoading) {
     return (
-      <div className="bg-white rounded-3xl shadow-sm border border-purple-100 p-6 min-h-100">
+      <div className="bg-white rounded-3xl shadow-sm border border-purple-100 p-6 flex flex-col h-150 max-h-150 overflow-hidden">
         <div className="flex justify-between items-center mb-6">
           <div className="h-6 w-48 bg-slate-100 rounded-lg animate-pulse" />
           <div className="h-6 w-28 bg-slate-100 rounded-full animate-pulse" />
@@ -244,8 +245,8 @@ export default function RetentionWidget() {
   }
 
   return (
-    <div className="bg-white rounded-3xl shadow-sm border border-purple-100 p-6 min-h-100">
-      <div className="flex justify-between items-center mb-6">
+    <div className="bg-white rounded-3xl shadow-sm border border-purple-100 p-6 flex flex-col h-150 max-h-150 overflow-hidden">
+      <div className="flex justify-between items-center mb-6 shrink-0">
         <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
           🧠 AI Retention Engine
         </h2>
@@ -263,7 +264,7 @@ export default function RetentionWidget() {
 
       {riskyMembers.length === 0 ? (
         // Safe state.
-        <div className="flex flex-col items-center justify-center h-64 text-center">
+        <div className="flex flex-1 flex-col items-center justify-center text-center">
           <div className="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center mb-4">
             <AlertCircle className="h-8 w-8 text-green-500" />
           </div>
@@ -274,7 +275,7 @@ export default function RetentionWidget() {
         </div>
       ) : (
         // Warning state — compact list with a soft red/orange aesthetic.
-        <div className="space-y-3 max-h-100 overflow-y-auto pr-2 custom-scrollbar">
+        <div className="space-y-3 flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-2 custom-scrollbar">
           {riskyMembers.map((member) => (
             <div
               key={member.id}

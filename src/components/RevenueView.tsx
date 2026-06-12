@@ -38,6 +38,8 @@ import { BackButton } from "./BackButton";
 import { supabase } from "@/supabase";
 import { hasAccess } from "@/lib/permissions";
 import { isApprovedPayment } from "@/lib/revenue";
+import { debounce } from "@/lib/debounce";
+import { useAuth } from "@/lib/auth-context";
 import { ProtectedProRoute } from "./ProtectedProRoute";
 import { Lock, Crown } from "lucide-react";
 
@@ -57,24 +59,24 @@ export function RevenueView() {
   // Year currently selected in the Revenue Growth chart (defaults to this year).
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
 
-  // Get user session once on mount
+  const { user } = useAuth();
+
+  // Resolve the owner + their gym from the global auth state.
   useEffect(() => {
-    const getUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user?.id) {
-        setCurrentUserId(session.user.id);
-        const { data: gymRow } = await supabase
-          .from("gym_settings")
-          .select("id, gym_name, created_at")
-          .eq("gym_owner_id", session.user.id)
-          .maybeSingle();
-        setCurrentGymId(gymRow?.id || null);
-        setGymName(gymRow?.gym_name || "");
-        setGymCreatedAt(gymRow?.created_at ?? null);
-      }
+    const loadGym = async () => {
+      if (!user?.id) return;
+      setCurrentUserId(user.id);
+      const { data: gymRow } = await supabase
+        .from("gym_settings")
+        .select("id, gym_name, created_at")
+        .eq("gym_owner_id", user.id)
+        .maybeSingle();
+      setCurrentGymId(gymRow?.id || null);
+      setGymName(gymRow?.gym_name || "");
+      setGymCreatedAt(gymRow?.created_at ?? null);
     };
-    getUser();
-  }, []);
+    loadGym();
+  }, [user?.id]);
 
   const fetchData = useCallback(async (userId: string) => {
     setIsLoading(true);
@@ -162,28 +164,34 @@ export function RevenueView() {
 
     fetchData(currentUserId);
 
+    // fetchData re-reads the WHOLE payments ledger + members + profiles, so a
+    // burst of realtime events (payment batch, bulk member import) must not run
+    // it once per event. Coalesce into a single trailing refetch.
+    const debouncedRefetch = debounce(() => fetchData(currentUserId), 400);
+
     const revenueChannel = supabase
       .channel("revenue_view_realtime")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "payments", filter: `gym_owner_id=eq.${currentUserId}` },
-        () => fetchData(currentUserId)
+        debouncedRefetch
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "members", filter: `gym_owner_id=eq.${currentUserId}` },
-        () => fetchData(currentUserId)
+        debouncedRefetch
       )
       .on(
         "postgres_changes",
         currentGymId
           ? { event: "*", schema: "public", table: "membership_plans", filter: `gym_id=eq.${currentGymId}` }
           : { event: "*", schema: "public", table: "membership_plans" },
-        () => fetchData(currentUserId)
+        debouncedRefetch
       )
       .subscribe();
 
     return () => {
+      debouncedRefetch.cancel();
       supabase.removeChannel(revenueChannel);
     };
   }, [currentUserId, currentGymId, fetchData]);

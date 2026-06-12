@@ -25,6 +25,7 @@ import { Html5QrcodeScanner } from "html5-qrcode";
 import { QRCodeCanvas } from "qrcode.react";
 
 import { supabase } from "@/supabase";
+import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -53,6 +54,7 @@ import { LegalLinksFooter } from "@/components/LegalLinksFooter";
 import { MemberAttendanceTab } from "@/components/MemberAttendanceTab";
 import { MembershipGate } from "@/components/MembershipGate";
 import { MemberJoinScanner } from "@/components/MemberJoinScanner";
+import { AmbientBackground } from "@/components/AmbientBackground";
 import { MemberGymStore } from "@/components/MemberGymStore";
 import { MemberNotesTab } from "@/components/MemberNotesTab";
 import { MemberGoalsCard } from "@/components/MemberGoalsCard";
@@ -136,6 +138,12 @@ export default function MemberDashboard() {
   const [isUpdatingMobile, setIsUpdatingMobile] = useState(false);
   const [isUpdatingName, setIsUpdatingName] = useState(false);
   const [activeTab, setActiveTab] = useState("dashboard");
+  // Reset the scroll container to top on tab change — tabs are state, not routes,
+  // so the main pane would otherwise keep its prior scroll position.
+  const mainScrollRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    mainScrollRef.current?.scrollTo({ top: 0 });
+  }, [activeTab]);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const calculateNextSession = useCallback((gymOpeningTime?: string) => {
@@ -414,10 +422,12 @@ export default function MemberDashboard() {
     if (data.gym_id) await refreshGymContext(data.gym_id, memberId);
   }, [refreshGymContext]);
 
+  const { user: authUser } = useAuth();
+
   useEffect(() => {
     const loadMember = async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const user = authUser;
         if (!user) {
           navigate({ to: "/login" });
           return;
@@ -456,7 +466,8 @@ export default function MemberDashboard() {
       }
     };
     loadMember();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser?.id]);
 
   useEffect(() => {
     const searchGyms = async () => {
@@ -753,7 +764,8 @@ export default function MemberDashboard() {
   }
 
   return (
-    <div className="flex w-full min-h-screen overflow-hidden bg-background text-foreground font-sans">
+    <div className="relative flex w-full h-screen overflow-hidden bg-slate-50 text-foreground font-sans">
+      <AmbientBackground />
       <AnimatePresence>
         {showSuccessAnimation && (
           <motion.div
@@ -794,12 +806,9 @@ export default function MemberDashboard() {
         </div>
       </aside>
 
-      <main className="grow relative isolate overflow-y-auto px-6 py-8 md:px-10 lg:py-12">
+      <main ref={mainScrollRef} className="grow relative isolate overflow-y-auto px-6 py-8 md:px-10 lg:py-12">
         {/* Background gradients — same blended purple glow as the Owner Dashboard.
             Blurred orbs sit behind content (-z-10) over the near-white bg-background. */}
-        <div className="glow-orb top-0 right-0 -z-10 h-96 w-96 bg-primary-glow opacity-20" />
-        <div className="glow-orb bottom-0 left-1/4 -z-10 h-80 w-80 bg-primary opacity-10" />
-
         {/* Mobile header — branding + bell + hamburger drawer. Hidden on desktop;
             the hamburger lives ONLY here so it never appears beside the rail. */}
         <div className="lg:hidden flex items-center justify-between mb-8">

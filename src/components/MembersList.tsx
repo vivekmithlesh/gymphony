@@ -40,6 +40,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
 import { isValidInternationalPhone, normalizeToE164Phone, phoneForWaMe } from "@/lib/phone";
 import { isApprovedPayment } from "@/lib/revenue";
+import { useAuth } from "@/lib/auth-context";
 
 // Optimized Member Row Component
 const MemberRow = memo(({ 
@@ -59,10 +60,13 @@ const MemberRow = memo(({
   onCollectPayment: (m: any) => void;
   onDelete: (m: any) => void;
 }) => (
-  <motion.tr 
+  <motion.tr
     initial={{ opacity: 0, y: 10 }}
     animate={{ opacity: 1, y: 0 }}
-    transition={{ delay: index * 0.05 }}
+    // Cap the stagger: a linear index*0.05 delay meant the 500th row waited 25s
+    // to appear. Bound it to the first ~12 rows so the list never animates for
+    // more than ~0.36s regardless of member count.
+    transition={{ delay: Math.min(index, 12) * 0.03 }}
     className="hover:bg-slate-50/80 transition-colors group"
   >
     <td className="px-6 py-4">
@@ -140,6 +144,11 @@ export function MembersList() {
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
+  // Client-side windowing: render only the first `visibleCount` matching rows so
+  // the DOM stays bounded even with 1000+ members. Search/filter still run over
+  // the full set; "Load more" reveals the next page. No virtualization library.
+  const PAGE_SIZE = 50;
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [members, setMembers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedMember, setSelectedMember] = useState<any>(null);
@@ -148,6 +157,7 @@ export function MembersList() {
   const [paymentAmount, setPaymentAmount] = useState("");
   const [isUpdating, setIsUpdating] = useState(false);
   const [availablePlans, setAvailablePlans] = useState<any[]>([]);
+  const { user: authUser } = useAuth();
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [isBulkOpen, setIsBulkOpen] = useState(false);
   const [gymMeta, setGymMeta] = useState<{ id: string | null; name: string }>({ id: null, name: "" });
@@ -158,14 +168,10 @@ export function MembersList() {
     status: ""
   });
 
-  // Get current user
+  // Current user comes from the global AuthProvider (single source of truth).
   useEffect(() => {
-    const getUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setCurrentUser(user);
-    };
-    getUser();
-  }, []);
+    setCurrentUser(authUser);
+  }, [authUser]);
 
   // Debounce search input
   useEffect(() => {
@@ -235,8 +241,7 @@ export function MembersList() {
   const fetchMembers = async () => {
     try {
       setIsLoading(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      const userId = session?.user?.id;
+      const userId = authUser?.id;
 
       if (!userId) {
         console.error("No active auth session found for members fetch.");
@@ -330,13 +335,22 @@ export function MembersList() {
   };
 
   const filteredMembers = members.filter(member => {
-    const matchesSearch = (member.member_name || '').toLowerCase().includes(debouncedSearch.toLowerCase()) || 
+    const matchesSearch = (member.member_name || '').toLowerCase().includes(debouncedSearch.toLowerCase()) ||
                           (member.phone || '').includes(debouncedSearch);
-    const matchesFilter = filterStatus === "all" || 
+    const matchesFilter = filterStatus === "all" ||
                          (filterStatus === "active" && (member.status || '').toLowerCase() === "active") ||
                          (filterStatus === "overdue" && (member.status || '').toLowerCase() === "overdue");
     return matchesSearch && matchesFilter;
   });
+
+  // Reset the window whenever the result set changes (new search/filter/data),
+  // so "Load more" always starts from the top of the current results.
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [debouncedSearch, filterStatus, members]);
+
+  const visibleMembers = filteredMembers.slice(0, visibleCount);
+  const remainingCount = filteredMembers.length - visibleMembers.length;
 
   const handleDelete = async (member: any) => {
     if (!window.confirm(`Are you sure you want to delete this member?`)) {
@@ -507,8 +521,7 @@ export function MembersList() {
 
     try {
       setIsUpdating(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      const userId = session?.user?.id;
+      const userId = authUser?.id;
 
       if (!userId) {
         toast.error("Session expired. Please login again.");
@@ -628,12 +641,13 @@ export function MembersList() {
         onComplete={fetchMembers}
       />
 
-      {/* Data Table */}
+      {/* Data Table — bounded height so a long member list scrolls inside the
+          card instead of stretching the page. Sticky header keeps columns visible. */}
       <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-soft">
-        <div className="overflow-x-auto">
+        <div className="max-h-[60vh] overflow-auto">
           <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-slate-100 bg-slate-50/50">
+            <thead className="sticky top-0 z-10">
+              <tr className="border-b border-slate-100 bg-slate-50">
                 <th className="px-6 py-4 text-xs font-bold text-muted-foreground uppercase tracking-wider">Member Name</th>
                 <th className="px-6 py-4 text-xs font-bold text-muted-foreground uppercase tracking-wider">Phone Number</th>
                 <th className="px-6 py-4 text-xs font-bold text-muted-foreground uppercase tracking-wider">Membership Plan</th>
@@ -650,8 +664,8 @@ export function MembersList() {
                     <td colSpan={6} className="px-6 py-8 h-16 bg-slate-50/50 mb-2"></td>
                   </tr>
                 ))
-              ) : filteredMembers.map((member, i) => (
-                <MemberRow 
+              ) : visibleMembers.map((member, i) => (
+                <MemberRow
                   key={member.id}
                   member={member}
                   index={i}
@@ -664,6 +678,21 @@ export function MembersList() {
               ))}
             </tbody>
           </table>
+          {!isLoading && remainingCount > 0 && (
+            <div className="flex items-center justify-center gap-3 py-4 border-t border-slate-100 bg-white">
+              <span className="text-xs text-muted-foreground">
+                Showing {visibleMembers.length} of {filteredMembers.length}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                className="h-8 rounded-lg border-slate-200 text-slate-700 font-semibold hover:bg-primary/5 hover:text-primary"
+              >
+                Load more
+              </Button>
+            </div>
+          )}
           {!isLoading && filteredMembers.length === 0 && (
             <div className="py-20 text-center space-y-3">
               <div className="h-12 w-12 bg-white/5 rounded-full flex items-center justify-center mx-auto text-muted-foreground">

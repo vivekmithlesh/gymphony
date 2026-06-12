@@ -25,9 +25,8 @@ import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { supabase } from "@/supabase";
-import { hasSupabaseConfig } from "@/supabase";
 import { toast } from "sonner";
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import { getDashboardPathForRole, resolveUserRole } from "@/lib/auth-role";
 import { INTERNATIONAL_PHONE_REGEX, cleanPhoneInput, normalizeToE164Phone } from "@/lib/phone";
 
@@ -90,26 +89,9 @@ function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"login" | "signup">("login");
-  const authControllerRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        const role = await resolveUserRole(session.user);
-        if (role) {
-          navigate({ to: getDashboardPathForRole(role), replace: true });
-        }
-      }
-    };
-    checkSession();
-
-    return () => {
-      if (authControllerRef.current) {
-        authControllerRef.current.abort();
-      }
-    };
-  }, [navigate]);
+  // A signed-in user landing on /login is redirected to their dashboard by the
+  // global <AuthRedirects/> in __root.tsx — no per-page session check needed.
 
   const signupForm = useForm<SignupFormValues>({
     resolver: zodResolver(signupSchema),
@@ -132,34 +114,35 @@ function LoginPage() {
 
   const [cityOpen, setCityOpen] = useState(false);
 
-  const onLoginInvalid = (errors: Record<string, any>) => {
-    console.log("DEBUG: Login submission blocked by validation:", errors);
-    alert("Please enter both email/mobile and password.");
+  const onLoginInvalid = () => {
     toast.error("Please enter both email/mobile and password.");
   };
 
   const onSignupSubmit = async (data: SignupFormValues) => {
-    if (authControllerRef.current) {
-      authControllerRef.current.abort();
-    }
-    authControllerRef.current = new AbortController();
-
     setIsLoading(true);
     try {
-      // 1. Sign up user with email/password
+      // 1. Create the auth user (role stored in user_metadata).
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: data.email,
         password: data.password,
-        options: {
-          data: {
-            role: "owner",
-          },
-        },
+        options: { data: { role: "owner" } },
       });
 
-      if (authError) throw authError;
+      if (authError) {
+        const msg = String(authError.message || "").toLowerCase();
+        if (
+          msg.includes("already registered") ||
+          msg.includes("already in use") ||
+          msg.includes("user already")
+        ) {
+          toast.error("Email already in use. Please log in instead.");
+        } else {
+          toast.error(authError.message || "Could not create your account.");
+        }
+        return;
+      }
 
-      // 2. Upsert gym profile (use onConflict to avoid duplicate key errors)
+      // 2. Upsert the gym profile (onConflict avoids duplicate-key errors).
       const { error: profileError } = await supabase
         .from("gym_profiles")
         .upsert(
@@ -178,96 +161,48 @@ function LoginPage() {
 
       if (profileError) {
         if (
-          profileError.name === "AbortError" ||
-          profileError.message?.includes("abort") ||
-          profileError.message?.includes("Lock broken")
-        ) {
-          return;
-        }
-        // Duplicate key -> give user a helpful message
-        if (
           String(profileError.message || "").toLowerCase().includes("duplicate") ||
           String(profileError.code || "").includes("23505")
         ) {
-          alert("Aapki profile pehle se bani hai, kripya direct Login karein");
+          toast.error("This account already exists. Please log in instead.");
           return;
         }
-        throw profileError;
-      }
-
-      toast.success("✅ Account created and gym profile setup successfully!");
-      signupForm.reset();
-      setTimeout(() => {
-        try {
-          window.location.href = "/dashboard";
-        } catch (e) {
-          navigate({ to: "/dashboard", replace: true, search: {} as never });
-        }
-      }, 500);
-    } catch (error: any) {
-      // Silent error for aborts
-      if (
-        error.name === 'AbortError' || 
-        error.message?.includes('abort') || 
-        error.message?.includes('Lock broken')
-      ) {
-        console.warn('Silent fetch error in onSignupSubmit:', error);
+        toast.error(profileError.message || "Could not set up your gym profile.");
         return;
       }
-      console.warn("Signup error:", error);
+
+      toast.success("Account created! Setting up your dashboard…");
+      signupForm.reset();
+      // onAuthStateChange + <AuthRedirects/> will route to /dashboard; navigate
+      // explicitly for an immediate transition. (String target avoids the
+      // required-search typing on the literal "/dashboard" route.)
+      navigate({ to: getDashboardPathForRole("owner"), replace: true });
+    } catch (error: any) {
+      toast.error(error?.message || "Signup failed. Please try again.");
     } finally {
       setIsLoading(false);
     }
   };
 
   const onLoginSubmit = async (data: LoginFormValues) => {
-    if (authControllerRef.current) {
-      authControllerRef.current.abort();
-    }
-    authControllerRef.current = new AbortController();
-
     setIsLoading(true);
     try {
-      console.log('Login Step 1: clearing sessions');
-      console.log("DEBUG: Supabase configured:", hasSupabaseConfig);
-      console.log("DEBUG: Clearing existing Supabase session before login...");
-      try {
-        await supabase.auth.signOut();
-        try { localStorage.clear(); } catch (e) { console.warn('localStorage.clear failed', e); }
-      } catch (signOutError) {
-        console.warn("DEBUG: Session clear failed, continuing with login:", signOutError);
-      }
-      if (!hasSupabaseConfig) {
-        alert('Supabase client not configured in this environment. Check .env.local.');
-      }
-      alert('Signing in...');
-      console.log("Attempting Login", { identifier: data.identifier });
-
       let loginEmail = data.identifier;
 
-      // Check if the input is an international mobile number
+      // Allow logging in with an international mobile number: look up the email.
       const normalizedMobile = normalizeToE164Phone(data.identifier, "");
       if (normalizedMobile) {
-        console.log("Supabase: Mobile number detected, looking up email...");
         const { data: profile, error: profileError } = await supabase
           .from("gym_profiles")
           .select("email")
           .or(`mobile_number.eq.${normalizedMobile},phone.eq.${normalizedMobile}`)
           .maybeSingle();
 
-        if (profileError || !profile) {
-          // Silent Abort: Ignore AbortError or Lock broken
-          if (
-            profileError?.name === 'AbortError' || 
-            profileError?.message?.includes('abort') || 
-            profileError?.message?.includes('Lock broken')
-          ) {
-            return;
-          }
-          throw new Error("No gym profile found with this mobile number");
+        if (profileError || !profile?.email) {
+          toast.error("No account found with this mobile number.");
+          return;
         }
         loginEmail = profile.email;
-        console.log("Supabase: Email found for mobile number:", loginEmail);
       }
 
       const { data: loginData, error } = await supabase.auth.signInWithPassword({
@@ -276,73 +211,38 @@ function LoginPage() {
       });
 
       if (error) {
-        console.log("Auth Error", error);
-        alert(error.message || "Login failed. Please check your password.");
-        toast.error(error.message || "Login failed. Please check your password.");
+        const msg = String(error.message || "").toLowerCase();
+        toast.error(
+          msg.includes("invalid login credentials")
+            ? "Invalid credentials. Please check your email/mobile and password."
+            : error.message || "Login failed. Please try again."
+        );
         return;
       }
 
       const user = loginData?.user;
-      if (user) {
-        console.log("DEBUG: Auth user received:", user.id);
-        alert('Signed in. Fetching role...');
-
-        // Read role from profiles first, then resolve from the database only.
-        const { data: profile, error: fetchError } = await supabase
-          .from("profiles")
-          .select("id, role")
-          .eq("id", user.id)
-          .maybeSingle();
-
-        console.log("Profile Data", profile);
-
-        if (fetchError) {
-          console.error("DEBUG: Error fetching profile on login:", fetchError);
-          try { alert('Failed to fetch profile role: ' + (fetchError?.message || String(fetchError))); } catch (e) { console.warn('alert failed', e); }
-        }
-
-        const profileRole = readRoleValue(profile?.role);
-        console.log("DEBUG: Login profile role:", profileRole ?? "missing");
-        alert(`Role fetched: ${profileRole ?? 'unknown'}`);
-
-        if (!profile) {
-          console.log("DEBUG: Profile row missing, attempting database role resolution only...");
-        }
-
-        const resolvedRole = profileRole ?? (await resolveUserRole(user));
-        if (!resolvedRole) {
-          toast.error("Unable to determine account role.");
-          return;
-        }
-        const target = getDashboardPathForRole(resolvedRole);
-
-        console.log("DEBUG: Login role resolved:", resolvedRole);
-        console.log("DEBUG: Redirect target after login:", target);
-        alert(`Redirecting to: ${target}`);
-
-        toast.success("✅ Logged in successfully!");
-        loginForm.reset();
-        console.log('Login Step 4: performing hard redirect to', target);
-        try { window.location.href = target; } catch (e) { console.warn('Hard redirect failed, falling back to router navigate', e); navigate({ to: target, replace: true }); }
+      if (!user) {
+        toast.error("Login failed. Please try again.");
         return;
       }
 
-      alert("Login failed. No user session returned.");
-      toast.error("Login failed. No user session returned.");
-      console.log("DEBUG: Login returned no user, redirecting to home.");
-      try { window.location.href = '/'; } catch (e) { navigate({ to: "/", replace: true }); }
+      // Resolve role for the redirect target (profiles first, then full lookup).
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("id, role")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      const resolvedRole = readRoleValue(profile?.role) ?? (await resolveUserRole(user));
+      if (!resolvedRole) {
+        toast.error("Unable to determine account role. Please contact support.");
+        return;
+      }
+
+      toast.success("Logged in successfully!");
+      loginForm.reset();
+      navigate({ to: getDashboardPathForRole(resolvedRole), replace: true });
     } catch (error: any) {
-      // Silent error for aborts
-      if (
-        error.name === 'AbortError' || 
-        error.message?.includes('abort') || 
-        error.message?.includes('Lock broken')
-      ) {
-        console.warn('Silent fetch error in onLoginSubmit:', error);
-        return;
-      }
-      console.warn("Login error:", error);
-      try { alert(error?.message || "Login failed. Please try again."); } catch (e) { console.warn('alert failed', e); }
       toast.error(error?.message || "Login failed. Please try again.");
     } finally {
       setIsLoading(false);

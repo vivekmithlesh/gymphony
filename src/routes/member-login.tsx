@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Navbar } from "@/components/Navbar";
 import { supabase } from "@/supabase";
+import { useAuth } from "@/lib/auth-context";
 // Member-login enforces member-only flow; avoid role fallback logic
 
 export const Route = createFileRoute("/member-login")({
@@ -29,17 +30,14 @@ function MemberLoginPage() {
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+  const { session } = useAuth();
 
+  // A signed-in user on this page goes straight to the member dashboard.
   useEffect(() => {
-    const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        // Always send users from this page to the member dashboard.
-        navigate({ to: "/member-dashboard", replace: true });
-      }
-    };
-    checkSession();
-  }, [navigate]);
+    if (session) {
+      navigate({ to: "/member-dashboard", replace: true });
+    }
+  }, [session, navigate]);
 
   const ensureMemberProfile = async (user: any) => {
     try {

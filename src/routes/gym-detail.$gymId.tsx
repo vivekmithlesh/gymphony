@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { supabase } from "@/supabase";
+import { useAuth } from "@/lib/auth-context";
 import { GymDetailView } from "@/components/GymDetailView";
 
 export const Route = createFileRoute("/gym-detail/$gymId")({
@@ -19,23 +20,8 @@ export const Route = createFileRoute("/gym-detail/$gymId")({
 
 function GymDetailPage() {
   const { gymId } = Route.useParams();
-  const navigate = useNavigate();
-  const [memberId, setMemberId] = useState<string | undefined>();
+  // Identity from the global AuthProvider (single source of truth).
+  const { user } = useAuth();
 
-  // Get current user
-  useEffect(() => {
-    const getUser = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (session?.user?.id) {
-        setMemberId(session.user.id);
-      }
-    };
-
-    void getUser();
-  }, []);
-
-  return <GymDetailView gymId={gymId} memberId={memberId} />;
+  return <GymDetailView gymId={gymId} memberId={user?.id} />;
 }

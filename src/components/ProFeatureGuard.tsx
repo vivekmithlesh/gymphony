@@ -4,6 +4,7 @@ import { Crown, Lock, X, Sparkles, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { supabase } from '@/supabase';
+import { useAuth } from '@/lib/auth-context';
 import { initiatePhonePePayment, finalizeUpgrade } from '@/lib/phonepe';
 
 interface ProFeatureGuardProps {
@@ -21,6 +22,7 @@ export const ProFeatureGuard: React.FC<ProFeatureGuardProps> = ({
 }) => {
   const [showModal, setShowModal] = React.useState(false);
   const [isProcessing, setIsProcessing] = React.useState(false);
+  const { user } = useAuth();
 
   const isPro = planType === 'Pro';
 
@@ -33,7 +35,6 @@ export const ProFeatureGuard: React.FC<ProFeatureGuardProps> = ({
   };
 
   const handlePayment = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
     await initiatePhonePePayment(

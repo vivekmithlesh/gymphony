@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/supabase';
+import { debounce } from '@/lib/debounce';
+import { useAuth } from '@/lib/auth-context';
 import { TrendingUp } from 'lucide-react';
 import {
   AreaChart,
@@ -49,6 +51,12 @@ export default function AttendanceHeatmap() {
   const [isLoading, setIsLoading] = useState(true);
   const controllerRef = useRef<AbortController | null>(null);
   const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  // Stable debounced refetch: a peak-hours rush writes many check-ins; without
+  // this each INSERT re-ran the full 30-day scan. fetchRef always points at the
+  // latest closure so the debounced wrapper itself never needs recreating.
+  const fetchRef = useRef<() => void>(() => {});
+  const debouncedRefetchRef = useRef(debounce(() => fetchRef.current(), 800));
+  const { user } = useAuth();
 
   const isAbortError = (error: any) =>
     error?.name === 'AbortError' ||
@@ -65,9 +73,8 @@ export default function AttendanceHeatmap() {
     setIsLoading(true);
 
     try {
-      // 1. Resolve the authenticated owner and their gym.
-      const { data: sessionData } = await supabase.auth.getSession();
-      const ownerId = sessionData.session?.user?.id;
+      // 1. Resolve the authenticated owner (from global auth) and their gym.
+      const ownerId = user?.id;
 
       if (!ownerId) {
         setData([]);
@@ -142,7 +149,7 @@ export default function AttendanceHeatmap() {
         .on(
           'postgres_changes',
           { event: 'INSERT', schema: 'public', table: 'check_ins', filter: `gym_id=eq.${gymId}` },
-          () => fetchPeakHoursData()
+          () => debouncedRefetchRef.current()
         )
         .subscribe();
     } catch (error: any) {
@@ -154,15 +161,21 @@ export default function AttendanceHeatmap() {
     }
   };
 
+  // Keep fetchRef pointed at the latest closure for the debounced realtime refetch.
+  fetchRef.current = fetchPeakHoursData;
+
   useEffect(() => {
+    const debounced = debouncedRefetchRef.current;
     fetchPeakHoursData();
 
     return () => {
+      debounced.cancel();
       if (controllerRef.current) controllerRef.current.abort();
       if (realtimeChannelRef.current) supabase.removeChannel(realtimeChannelRef.current);
     };
+    // Re-run once the authenticated owner is known (auth resolves async).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user?.id]);
 
   const hasData = data.length > 0 && data.some((d) => d.avg > 0);
 

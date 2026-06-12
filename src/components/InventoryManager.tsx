@@ -50,7 +50,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { BackButton } from "./BackButton";
+import { OwnerStoreOrders } from "./OwnerStoreOrders";
 import { supabase } from "@/supabase";
+import { useAuth } from "@/lib/auth-context";
 import { hasAccess } from "@/lib/permissions";
 import { Crown, Lock } from 'lucide-react';
 import { useNavigate } from "@tanstack/react-router";
@@ -102,19 +104,19 @@ export function InventoryManager() {
   // The gym's id (gym_settings.id) — stamped onto each product so the member
   // storefront, which queries inventory by gym_id, can find it.
   const [gymId, setGymId] = useState<string | null>(null);
+  const { user } = useAuth();
 
   useEffect(() => {
     const fetchSettings = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user?.id) {
-        setOwnerId(session.user.id);
-        const { data } = await supabase.from('gym_settings').select('id, plan_type').eq('gym_owner_id', session.user.id).single();
+      if (user?.id) {
+        setOwnerId(user.id);
+        const { data } = await supabase.from('gym_settings').select('id, plan_type').eq('gym_owner_id', user.id).single();
         setGymSettings(data);
         setGymId(data?.id ?? null);
       }
     };
     fetchSettings();
-  }, []);
+  }, [user?.id]);
 
   const isPro = hasAccess(gymSettings?.plan_type, 'advanced_analytics');
 
@@ -161,6 +163,27 @@ export function InventoryManager() {
       return;
     }
     setCampaigns((data as Campaign[]) || []);
+  }, []);
+
+  // How many completed orders each campaign has driven, so owners can see at a
+  // glance whether a campaign is actually converting into sales.
+  const [campaignOrders, setCampaignOrders] = useState<Record<string, number>>({});
+  const fetchCampaignOrders = useCallback(async (owner: string) => {
+    const { data, error } = await supabase
+      .from("purchases")
+      .select("campaign_id")
+      .eq("gym_owner_id", owner)
+      .eq("status", "completed")
+      .not("campaign_id", "is", null);
+    if (error) {
+      console.warn("Campaign orders fetch error:", error.message);
+      return;
+    }
+    const counts: Record<string, number> = {};
+    (data || []).forEach((r: any) => {
+      if (r.campaign_id) counts[r.campaign_id] = (counts[r.campaign_id] || 0) + 1;
+    });
+    setCampaignOrders(counts);
   }, []);
 
   const handleToggleCampaign = async (id: string, isActive: boolean) => {
@@ -230,7 +253,7 @@ export function InventoryManager() {
 
     try {
       setIsLaunchingCampaign(true);
-      const { data: { user } } = await supabase.auth.getUser();
+      // user comes from useAuth (component scope)
       if (!user) {
         toast.error("Please sign in again to launch a campaign.");
         return;
@@ -312,6 +335,7 @@ export function InventoryManager() {
 
     fetchInventory(ownerId);
     fetchCampaigns(ownerId);
+    fetchCampaignOrders(ownerId);
 
     const channel = supabase
       .channel("inventory_realtime")
@@ -325,12 +349,17 @@ export function InventoryManager() {
         { event: "*", schema: "public", table: "campaigns", filter: `gym_owner_id=eq.${ownerId}` },
         () => fetchCampaigns(ownerId)
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "purchases", filter: `gym_owner_id=eq.${ownerId}` },
+        () => fetchCampaignOrders(ownerId)
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [gymSettings, isPro, ownerId, fetchInventory, fetchCampaigns]);
+  }, [gymSettings, isPro, ownerId, fetchInventory, fetchCampaigns, fetchCampaignOrders]);
 
   const handleImageUpload = async (file: File | Blob) => {
     try {
@@ -346,7 +375,7 @@ export function InventoryManager() {
       }
 
       setUploadingImage(true);
-      const { data: { user } } = await supabase.auth.getUser();
+      // user comes from useAuth (component scope)
       if (!user) {
         toast.error("Please sign in to upload images.");
         return null;
@@ -483,7 +512,7 @@ export function InventoryManager() {
     try {
       setIsSavingProduct(true);
 
-      const { data: { user } } = await supabase.auth.getUser();
+      // user comes from useAuth (component scope)
       if (!user) {
         toast.error("Please sign in again to add products.");
         return;
@@ -743,7 +772,7 @@ export function InventoryManager() {
                 Campaigns ({campaigns.filter((c) => c.is_active).length} live)
               </h2>
             </div>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 max-h-96 overflow-y-auto overflow-x-hidden pr-1 custom-scrollbar">
               {campaigns.map((c) => (
                 <div
                   key={c.id}
@@ -757,6 +786,16 @@ export function InventoryManager() {
                     <div className="flex items-center gap-2">
                       <span className="text-base">{c.target_type === "streak" ? "🔥" : "🌍"}</span>
                       <p className="truncate font-bold text-slate-900">{c.name}</p>
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                          (campaignOrders[c.id] || 0) > 0
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-slate-100 text-slate-400"
+                        }`}
+                        title="Completed orders driven by this campaign"
+                      >
+                        {campaignOrders[c.id] || 0} {(campaignOrders[c.id] || 0) === 1 ? "order" : "orders"}
+                      </span>
                     </div>
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       <span className="font-bold text-primary">{c.discount_percentage}% off</span>
@@ -800,6 +839,9 @@ export function InventoryManager() {
             </div>
           </div>
         )}
+
+        {/* Store Orders — who bought your products + which campaign drove the sale */}
+        <OwnerStoreOrders ownerId={ownerId} />
 
         {/* Inventory Grid */}
         <div className="relative">

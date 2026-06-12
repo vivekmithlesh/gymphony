@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useCityGymLeaderboard, type GymLeaderboardEntry } from "@/hooks/useCityGymLeaderboard";
 import { supabase } from "@/supabase";
+import { useAuth } from "@/lib/auth-context";
 
 // Map is client-only (Leaflet touches `window`), so load it lazily after mount.
 const CityLeaderboardMap = lazy(() => import("./CityLeaderboardMap"));
@@ -193,21 +194,21 @@ export const CityLeaderboard = () => {
   useEffect(() => setMounted(true), []);
 
   // The logged-in owner's own gym, so we can highlight "where they stand".
+  const { user } = useAuth();
   const [myGymId, setMyGymId] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user?.id) return;
+      if (!user?.id) return;
       const { data } = await supabase
         .from("gym_settings")
         .select("id")
-        .eq("gym_owner_id", session.user.id)
+        .eq("gym_owner_id", user.id)
         .maybeSingle();
       if (active) setMyGymId(data?.id ?? null);
     })();
     return () => { active = false; };
-  }, []);
+  }, [user?.id]);
 
   const myRank = useMemo(
     () => leaderboard.find((g) => g.gym_id === myGymId)?.rank ?? null,

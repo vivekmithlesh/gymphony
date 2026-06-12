@@ -144,7 +144,7 @@ export function OwnerPendingPayments({ ownerId, alertsEnabled = true }: OwnerPen
           Pending Payments ({payments.length})
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-3 max-h-64 overflow-y-auto overflow-x-hidden pr-1 custom-scrollbar">
         <AnimatePresence initial={false}>
           {payments.map((p) => {
             const busy = actingId === p.id;

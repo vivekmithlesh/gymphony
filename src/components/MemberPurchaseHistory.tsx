@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { ShoppingBag, Package, Pill, Dumbbell, Shirt, WalletCards } from "lucide-react";
 import { supabase } from "@/supabase";
 
@@ -206,6 +207,41 @@ export function MemberPurchaseHistory({ memberId }: MemberPurchaseHistoryProps) 
     }
   };
 
+  // One purchase row — shared between the compact card and the full-view dialog.
+  const renderRow = (purchase: Purchase) => (
+    <div
+      key={purchase.id}
+      className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100 hover:border-slate-200 transition-colors"
+    >
+      {/* Icon */}
+      <div className="shrink-0">
+        <InventoryVisual purchase={purchase} />
+      </div>
+
+      {/* Item Details */}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-slate-900 truncate">{purchase.item_name}</p>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
+          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${getCategoryColor(purchase.category)}`}>
+            {purchase.category || "Item"}
+          </span>
+          <span className="text-xs text-slate-500">Qty: {purchase.quantity}</span>
+          {purchase.status === "pending_verification" && (
+            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
+              Pending
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Price & Date */}
+      <div className="text-right shrink-0">
+        <p className="text-sm font-semibold text-slate-900">₹{(purchase.price * purchase.quantity).toLocaleString("en-IN")}</p>
+        <p className="text-xs text-slate-500 mt-1">{formatDate(purchase.purchase_date)}</p>
+      </div>
+    </div>
+  );
+
   if (isLoading) {
     return (
       <Card className="bg-white rounded-3xl border border-slate-200 shadow-sm">
@@ -240,41 +276,34 @@ export function MemberPurchaseHistory({ memberId }: MemberPurchaseHistoryProps) 
             <p className="text-sm text-slate-500">No purchases yet</p>
           </div>
         ) : (
-          <div className="space-y-3">
-            {purchases.map((purchase) => (
-              <div
-                key={purchase.id}
-                className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100 hover:border-slate-200 transition-colors"
-              >
-                {/* Icon */}
-                <div className="shrink-0">
-                  <InventoryVisual purchase={purchase} />
-                </div>
+          <>
+            {/* Vertical-only scroll — overflow-x-hidden stops the sideways scrollbar. */}
+            <div className="space-y-3 max-h-80 overflow-y-auto overflow-x-hidden pr-1 custom-scrollbar">
+              {purchases.map(renderRow)}
+            </div>
 
-                {/* Item Details */}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-slate-900 truncate">{purchase.item_name}</p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${getCategoryColor(purchase.category)}`}>
-                      {purchase.category || "Item"}
+            {/* Full view — see every order in a scrollable dialog. */}
+            <Dialog>
+              <DialogTrigger asChild>
+                <button className="mt-3 w-full rounded-xl border border-slate-200 py-2.5 text-sm font-semibold text-purple-600 transition-colors hover:bg-purple-50">
+                  View all orders
+                </button>
+              </DialogTrigger>
+              <DialogContent className="max-w-lg">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center justify-between gap-4">
+                    <span>My Inventory</span>
+                    <span className="text-sm font-semibold text-purple-600">
+                      Total Spent ₹{totalSpent.toLocaleString("en-IN")}
                     </span>
-                    <span className="text-xs text-slate-500">Qty: {purchase.quantity}</span>
-                    {purchase.status === "pending_verification" && (
-                      <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
-                        Pending
-                      </span>
-                    )}
-                  </div>
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-3 max-h-[70vh] overflow-y-auto overflow-x-hidden pr-1 custom-scrollbar">
+                  {purchases.map(renderRow)}
                 </div>
-
-                {/* Price & Date */}
-                <div className="text-right shrink-0">
-                  <p className="text-sm font-semibold text-slate-900">₹{(purchase.price * purchase.quantity).toLocaleString("en-IN")}</p>
-                  <p className="text-xs text-slate-500 mt-1">{formatDate(purchase.purchase_date)}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+              </DialogContent>
+            </Dialog>
+          </>
         )}
       </CardContent>
     </Card>

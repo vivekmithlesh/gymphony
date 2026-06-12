@@ -25,6 +25,7 @@ import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { supabase } from "@/supabase";
+import { useAuth } from "@/lib/auth-context";
 import { toast } from "sonner";
 import { useState, useRef, useEffect } from "react";
 import { getDashboardPathForRole, resolveUserRole } from "@/lib/auth-role";
@@ -94,25 +95,20 @@ function SignupPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"login" | "signup">("signup");
   const authControllerRef = useRef<AbortController | null>(null);
+  const { session, role, roleResolved } = useAuth();
 
+  // A signed-in user on the join page is routed to their dashboard (parity with
+  // the previous behaviour), now driven by the global auth state.
   useEffect(() => {
-    const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        const role = await resolveUserRole(session.user);
-        if (role) {
-          navigate({ to: getDashboardPathForRole(role), replace: true });
-        }
-      }
-    };
-    checkSession();
-
+    if (session && roleResolved && role) {
+      navigate({ to: getDashboardPathForRole(role), replace: true });
+    }
     return () => {
       if (authControllerRef.current) {
         authControllerRef.current.abort();
       }
     };
-  }, [navigate]);
+  }, [session, role, roleResolved, navigate]);
 
   const signupForm = useForm<SignupFormValues>({
     resolver: zodResolver(signupSchema),

@@ -70,8 +70,11 @@ import { InventoryManager } from "@/components/InventoryManager";
 import { RevenueView } from "@/components/RevenueView";
 import { SettingsView } from "@/components/SettingsView";
 import { AttendanceView } from "@/components/AttendanceView";
+import { AmbientBackground } from "@/components/AmbientBackground";
 import { DashboardErrorBoundary } from "@/components/DashboardErrorBoundary";
 import { INTERNATIONAL_PHONE_REGEX, cleanPhoneInput, isValidInternationalPhone, normalizeToE164Phone, phoneForWaMe } from "@/lib/phone";
+import { debounce } from "@/lib/debounce";
+import { useAuth } from "@/lib/auth-context";
 import { 
   Sheet, 
   SheetContent, 
@@ -164,8 +167,18 @@ type GymPlan = {
 
 function DashboardPage() {
   const navigate = useNavigate();
+  const { user: authUser } = useAuth();
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Tabs switch via state on the SAME route (not navigation), so the scroll
+  // container keeps its position and looks like it "jumped". Reset it to top
+  // whenever the active tab changes. (TanStack <ScrollRestoration/> wouldn't fire
+  // here — there's no route change.)
+  const mainScrollRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    mainScrollRef.current?.scrollTo({ top: 0 });
+  }, [activeTab]);
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [addMemberTab, setAddMemberTab] = useState("Manual Entry");
   const [memberIdToLink, setMemberIdToLink] = useState("");
@@ -269,62 +282,24 @@ function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    const init = async () => {
-      // Mark that dashboard load was attempted to prevent re-mounting flicker
-      if (typeof window !== "undefined") {
-        localStorage.setItem("dashboardLoadAttempted", "true");
-      }
+    // Identity comes from the global AuthProvider (single source of truth) — no
+    // per-page getSession. The provider keeps authUser live across refreshes.
+    if (typeof window !== "undefined") {
+      localStorage.setItem("dashboardLoadAttempted", "true");
+    }
 
-      setIsGymSettingsLoading(true);
+    const userId = authUser?.id;
+    if (!userId) {
+      // Either still resolving (root shows nothing until isLoading clears) or
+      // signed out (root redirects to /login). Don't get stuck on the loader.
+      setIsGymSettingsLoading(false);
+      return;
+    }
 
-      try {
-        // 🔄 Force fresh session refresh to pick up latest gym_id from database
-        console.log("🔄 [Auth Cache] Refreshing Supabase session...");
-        const { data: { session }, error } = await supabase.auth.getSession();
-
-        if (error) {
-          console.error("❌ [Auth Cache] Session refresh failed:", error);
-          setIsGymSettingsLoading(false);
-          return;
-        }
-
-        if (session?.user?.id) {
-          const userId = session.user.id;
-          console.log("✅ [Auth Cache] Session refreshed. User ID:", userId);
-
-          setCurrentUserId(userId);
-
-          // Fetch latest gym settings to verify gym_id in database
-          const { data: gymData, error: gymError } = await supabase
-            .from("gym_settings")
-            .select("id, gym_owner_id, gym_name")
-            .eq("gym_owner_id", userId)
-            .maybeSingle();
-
-          if (gymData) {
-            console.log("✅ [Database Sync] Frontend gym_id:", gymData.id);
-            console.log("✅ [Database Sync] Database gym_name:", gymData.gym_name);
-            console.log("✅ [Database Sync] Frontend ↔ Database SYNC VERIFIED ✓");
-          } else if (gymError) {
-            console.warn("⚠️ [Database Sync] Gym settings fetch error:", gymError);
-          } else {
-            console.warn("⚠️ [Database Sync] No gym settings found for user:", userId);
-          }
-
-          fetchGymSettings(userId);
-        } else {
-          console.warn("⚠️ [Auth Cache] No active session found");
-          setIsGymSettingsLoading(false);
-        }
-      } catch (err) {
-        // Network/SDK rejection — prevent an unhandled promise rejection and a
-        // dashboard stuck on the loading screen if getSession() throws.
-        console.error("❌ [Auth Cache] Critical exception during init:", err);
-        setIsGymSettingsLoading(false);
-      }
-    };
-    init();
-  }, []);
+    setCurrentUserId(userId);
+    setIsGymSettingsLoading(true);
+    fetchGymSettings(userId);
+  }, [authUser?.id]);
 
   // ⏱️ Safety timeout to reset stuck loading states
   useEffect(() => {
@@ -1492,21 +1467,32 @@ function DashboardPage() {
       const liveRefreshInterval = setInterval(fetchLiveMemberCount, 60000);
 
       const channelId = Math.random().toString(36).substring(7);
-      const handleMemberPaymentUpdated = () => fetchMembersCounts();
+
+      // Coalesce realtime bursts. members/profiles/payments inserts can arrive in
+      // flurries (a payment batch, a bulk import, auto-expiry); without this each
+      // event re-ran the full fetchMembersCounts triple-query — a query storm at
+      // scale. Debouncing collapses a burst into ONE trailing refetch.
+      const debouncedMembersCounts = debounce(() => fetchMembersCounts(), 400);
+      const debouncedActivity = debounce(() => {
+        // Keep both the notifications bell and the Activity Log panel live.
+        fetchNotifications();
+        fetchRecentActivities();
+      }, 400);
+      // Live count is a cheap head-count, but every check-in fires it; debounce
+      // briefly so a rush at peak hours doesn't issue one query per scan.
+      const debouncedLiveCount = debounce(() => fetchLiveMemberCount(), 600);
+
+      const handleMemberPaymentUpdated = () => debouncedMembersCounts();
 
       window.addEventListener("member-payment-updated", handleMemberPaymentUpdated as EventListener);
 
       let realtimeChannel = supabase
         .channel(`dashboard_realtime_${channelId}`)
-        .on("postgres_changes", { event: "*", schema: "public", table: "activity_log", filter: `gym_owner_id=eq.${currentUserId}` }, () => {
-          // Keep both the notifications bell and the Activity Log panel live.
-          fetchNotifications();
-          fetchRecentActivities();
-        })
-        .on("postgres_changes", { event: "*", schema: "public", table: "members", filter: `gym_owner_id=eq.${currentUserId}` }, fetchMembersCounts)
-        .on("postgres_changes", { event: "*", schema: "public", table: "profiles", filter: `gym_owner_id=eq.${currentUserId}` }, fetchMembersCounts)
+        .on("postgres_changes", { event: "*", schema: "public", table: "activity_log", filter: `gym_owner_id=eq.${currentUserId}` }, debouncedActivity)
+        .on("postgres_changes", { event: "*", schema: "public", table: "members", filter: `gym_owner_id=eq.${currentUserId}` }, debouncedMembersCounts)
+        .on("postgres_changes", { event: "*", schema: "public", table: "profiles", filter: `gym_owner_id=eq.${currentUserId}` }, debouncedMembersCounts)
         // Keep revenue live when a payment is logged, approved, or rejected.
-        .on("postgres_changes", { event: "*", schema: "public", table: "payments", filter: `gym_owner_id=eq.${currentUserId}` }, fetchMembersCounts);
+        .on("postgres_changes", { event: "*", schema: "public", table: "payments", filter: `gym_owner_id=eq.${currentUserId}` }, debouncedMembersCounts);
 
       // Only listen to THIS gym's check-ins. Attached once the gym id is known
       // so we never subscribe to cross-gym attendance inserts.
@@ -1514,7 +1500,7 @@ function DashboardPage() {
         realtimeChannel = realtimeChannel.on(
           "postgres_changes",
           { event: "INSERT", schema: "public", table: "check_ins", filter: `gym_id=eq.${ownerGymId}` },
-          fetchLiveMemberCount
+          debouncedLiveCount
         );
       }
 
@@ -1522,6 +1508,9 @@ function DashboardPage() {
 
       return () => {
         clearInterval(liveRefreshInterval);
+        debouncedMembersCounts.cancel();
+        debouncedActivity.cancel();
+        debouncedLiveCount.cancel();
         window.removeEventListener("member-payment-updated", handleMemberPaymentUpdated as EventListener);
         supabase.removeChannel(channel);
       };
@@ -1692,7 +1681,7 @@ function DashboardPage() {
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl overflow-hidden shadow-2xl">
-                  <div className="divide-y divide-white/10">
+                  <div className="divide-y divide-white/10 max-h-80 overflow-y-auto overflow-x-hidden custom-scrollbar">
                     {overdueMembersData.length > 0 ? (
                       overdueMembersData.map((member, i) => (
                         <div key={member.name} className="p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-white/5 transition-colors">
@@ -1756,7 +1745,7 @@ function DashboardPage() {
                   <Clock className="h-6 w-6 text-primary" />
                   Activity Log
                 </h2>
-                <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-6 space-y-6">
+                <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-6 space-y-6 max-h-80 overflow-y-auto overflow-x-hidden custom-scrollbar">
                   {recentActivities.length > 0 ? (
                     recentActivities.map((activity, i) => (
                       <div key={i} className="flex items-center justify-between">
@@ -1851,7 +1840,8 @@ function DashboardPage() {
 
   return (
     <DashboardErrorBoundary>
-    <div className="w-full min-h-screen bg-background text-foreground flex flex-col overflow-hidden">
+    <div className="relative w-full h-screen bg-slate-50 text-foreground flex flex-col overflow-hidden">
+      <AmbientBackground />
       <AnimatePresence>
         {showRenewalBanner && (
           <motion.div
@@ -2058,7 +2048,7 @@ function DashboardPage() {
         </div>
       </aside>
 
-      <main className="grow relative overflow-y-auto px-6 py-8 md:px-10 lg:py-12">
+      <main ref={mainScrollRef} className="grow relative overflow-y-auto px-6 py-8 md:px-10 lg:py-12">
         {/* Mobile Header */}
         <div className="lg:hidden flex items-center justify-between mb-8">
           <Link to="/" className="flex items-center gap-2">
@@ -2263,10 +2253,6 @@ function DashboardPage() {
             </div>
           </div>
         </div>
-
-        {/* Background Gradients */}
-        <div className="glow-orb top-0 right-0 h-96 w-96 bg-primary-glow opacity-20" />
-        <div className="glow-orb bottom-0 left-1/4 h-80 w-80 bg-primary opacity-10" />
 
         <div className="relative max-w-7xl mx-auto space-y-10">
           <AnimatePresence>

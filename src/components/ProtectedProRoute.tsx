@@ -5,6 +5,7 @@ import { Crown, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { hasAccess } from '@/lib/permissions';
 import { supabase } from '@/supabase';
+import { useAuth } from '@/lib/auth-context';
 
 interface ProtectedProRouteProps {
   featureName: string;
@@ -18,24 +19,24 @@ export const ProtectedProRoute: React.FC<ProtectedProRouteProps> = ({
   children 
 }) => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [planType, setPlanType] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const fetchPlan = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user?.id) {
+      if (user?.id) {
         const { data } = await supabase
           .from('gym_settings')
           .select('plan_type')
-          .eq('gym_owner_id', session.user.id)
+          .eq('gym_owner_id', user.id)
           .single();
         setPlanType(data?.plan_type || 'Free');
       }
       setIsLoading(false);
     };
     fetchPlan();
-  }, []);
+  }, [user?.id]);
 
   const isPro = hasAccess(planType, 'advanced_analytics');
 

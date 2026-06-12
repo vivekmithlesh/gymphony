@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Loader2, Send, Sparkles, Bot, User, Pause, Play, Inbox } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase } from '@/supabase';
+import { useAuth } from '@/lib/auth-context';
 
 interface GymSettings {
   id: string;
@@ -49,6 +50,7 @@ export default function WhatsAppBotWidget() {
   const [gymId, setGymId] = useState<string | null>(null);
   const [gymOwnerId, setGymOwnerId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const { user } = useAuth();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -83,8 +85,7 @@ export default function WhatsAppBotWidget() {
     const initialize = async () => {
       setIsLoading(true);
       try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const ownerId = sessionData.session?.user?.id || null;
+        const ownerId = user?.id || null;
         if (!ownerId || !isMounted) {
           setIsLoading(false);
           return;
@@ -312,7 +313,7 @@ export default function WhatsAppBotWidget() {
 
   // ---- render ---------------------------------------------------------------
   return (
-    <div className="bg-white rounded-3xl shadow-sm border border-purple-100 p-6 flex flex-col h-full">
+    <div className="bg-white rounded-3xl shadow-sm border border-purple-100 p-6 flex flex-col h-[600px] max-h-[600px] overflow-hidden">
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
           🤖 AI WhatsApp Receptionist

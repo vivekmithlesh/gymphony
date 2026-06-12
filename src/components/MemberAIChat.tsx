@@ -111,7 +111,7 @@ export function MemberAIChat({ gymId, gymOwnerId, memberName, memberPhone }: Mem
   };
 
   return (
-    <Card className="flex h-full flex-col overflow-hidden">
+    <Card className="flex h-full max-h-150 flex-col overflow-hidden">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center justify-between text-lg">
           <span className="flex items-center gap-2">
@@ -131,8 +131,8 @@ export function MemberAIChat({ gymId, gymOwnerId, memberName, memberPhone }: Mem
       </CardHeader>
 
       <CardContent className="flex flex-1 flex-col gap-3">
-        {/* Scrollable message history (grows to fill the card, min height keeps it usable) */}
-        <div className="flex min-h-72 flex-1 flex-col gap-3 overflow-y-auto rounded-xl bg-slate-50 p-3">
+        {/* Scrollable message history — capped height so it scrolls instead of growing the card. */}
+        <div className="flex h-96 max-h-96 min-h-72 flex-1 flex-col gap-3 overflow-y-auto custom-scrollbar rounded-xl bg-slate-50 p-3">
           {messages.map((m, i) => {
             const isUser = m.role === 'user';
             return (

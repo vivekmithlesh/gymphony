@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, QrCode as QRCodeIcon } from "lucide-react";
+import { Loader2, QrCode as QRCodeIcon, Maximize2, X } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
 import { toast } from "sonner";
 import { supabase } from "@/supabase";
@@ -15,6 +15,7 @@ interface MemberQRCardProps {
     status?: string | null;
     subscription_status?: string | null;
     gym_id?: string | null;
+    joined_at?: string | null;
   };
 }
 
@@ -26,6 +27,9 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
   const [qrReady, setQrReady] = useState(!!member.id);
   const [localFullName, setLocalFullName] = useState(member.full_name || "");
   const [isUpdating, setIsUpdating] = useState(false);
+  // Full-screen pass: a member taps the QR (or the header icon) to blow the code
+  // up so it's trivial to hold under the kiosk scanner.
+  const [showFullscreen, setShowFullscreen] = useState(false);
 
   useEffect(() => {
     if (member.full_name) {
@@ -42,6 +46,19 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
     }
   }, [member.id, member.gym_id, member.short_id]);
 
+  // While the full-screen pass is open: lock body scroll and let Esc dismiss it.
+  useEffect(() => {
+    if (!showFullscreen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowFullscreen(false);
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [showFullscreen]);
+
   const formatMemberId = (value: string) => {
     const cleaned = (value || "").replace(/[^a-zA-Z0-9]/g, "");
     const suffix = cleaned.slice(-3).toUpperCase().padStart(3, "0");
@@ -50,6 +67,16 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
 
   const displayId = member.short_id || formatMemberId(member.id);
   const isActive = (member.status || member.subscription_status || "").toLowerCase() === "active";
+
+  // The day this person joined the gym (distinct from their subscription dates).
+  const memberSince = member.joined_at
+    ? (() => {
+        const d = new Date(member.joined_at);
+        return isNaN(d.getTime())
+          ? null
+          : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+      })()
+    : null;
 
   const handleNameUpdate = async () => {
     if (!member?.id || localFullName === member.full_name) return;
@@ -80,13 +107,20 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
   };
 
   return (
+    <>
     <Card className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden group">
       <CardHeader className="p-6 pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-base font-bold text-slate-900">Virtual ID Card</CardTitle>
-          <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+          <button
+            type="button"
+            onClick={() => qrReady && qrValue && setShowFullscreen(true)}
+            disabled={!qrReady || !qrValue}
+            aria-label="Show full-screen QR code for scanning"
+            className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary transition-transform hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
             <QRCodeIcon className="h-4 w-4" />
-          </div>
+          </button>
         </div>
       </CardHeader>
       <CardContent className="p-6 pt-2 space-y-6">
@@ -98,14 +132,25 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
               <span className="text-lg font-black text-slate-400">{(localFullName || "M").slice(0, 1).toUpperCase()}</span>
             )}
           </div>
-          <div className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 min-h-35 flex items-center justify-center">
+          <button
+            type="button"
+            onClick={() => qrReady && qrValue && setShowFullscreen(true)}
+            disabled={!qrReady || !qrValue}
+            aria-label="Tap to enlarge QR code for scanning"
+            className="relative bg-white p-3 rounded-2xl shadow-sm border border-slate-100 min-h-35 flex items-center justify-center transition-transform hover:scale-[1.02] active:scale-95 disabled:cursor-default disabled:hover:scale-100"
+          >
             {qrReady && qrValue ? (
-              <QRCodeCanvas
-                value={qrValue}
-                size={150}
-                level="M"
-                includeMargin
-              />
+              <>
+                <QRCodeCanvas
+                  value={qrValue}
+                  size={150}
+                  level="M"
+                  includeMargin
+                />
+                <span className="absolute bottom-1 right-1 h-6 w-6 rounded-full bg-primary text-white flex items-center justify-center shadow-md">
+                  <Maximize2 className="h-3 w-3" />
+                </span>
+              </>
             ) : (
               <div className="w-35 h-35 bg-slate-50 rounded-xl flex items-center justify-center border border-dashed border-slate-200">
                 <div className="text-center space-y-2">
@@ -116,7 +161,7 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
                 </div>
               </div>
             )}
-          </div>
+          </button>
           <div className="text-center space-y-1">
             <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Member ID</p>
             <p className="text-xl font-black text-slate-900 tracking-tight font-mono">
@@ -138,6 +183,12 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
               placeholder="Enter Name"
             />
           </div>
+          {memberSince && (
+            <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-100">
+              <span className="text-xs text-slate-500 font-medium">Member Since</span>
+              <span className="text-sm font-bold text-slate-900">{memberSince}</span>
+            </div>
+          )}
           <div className={`p-3 rounded-xl border flex items-center justify-center gap-2 ${isActive ? "bg-emerald-500/5 border-emerald-500/10" : "bg-slate-50 border-slate-200"}`}>
             <span className={`h-2 w-2 rounded-full animate-pulse ${isActive ? "bg-emerald-500" : "bg-slate-400"}`} />
             <span className={`text-[10px] font-black uppercase tracking-widest ${isActive ? "text-emerald-600" : "text-slate-500"}`}>
@@ -147,5 +198,49 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
         </div>
       </CardContent>
     </Card>
+
+    {showFullscreen && qrReady && qrValue && (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Member pass QR code"
+        onClick={() => setShowFullscreen(false)}
+        className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 bg-white/95 backdrop-blur-sm p-6 animate-in fade-in duration-150"
+      >
+        <button
+          type="button"
+          onClick={() => setShowFullscreen(false)}
+          aria-label="Close"
+          className="absolute top-5 right-5 h-11 w-11 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center shadow-sm active:scale-95"
+        >
+          <X className="h-5 w-5" />
+        </button>
+
+        <p className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">
+          Hold up to the scanner
+        </p>
+
+        {/* Stop propagation so tapping the code itself doesn't dismiss the overlay. */}
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="bg-white p-5 rounded-3xl shadow-xl border border-slate-100"
+        >
+          <QRCodeCanvas value={qrValue} size={280} level="M" includeMargin />
+        </div>
+
+        <div className="text-center space-y-1">
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Member ID</p>
+          <p className="text-2xl font-black text-slate-900 tracking-tight font-mono">
+            {displayId || "No ID"}
+          </p>
+          {localFullName && (
+            <p className="text-sm font-semibold text-slate-500">{localFullName}</p>
+          )}
+        </div>
+
+        <p className="text-[11px] text-slate-400 font-medium">Tap anywhere to close</p>
+      </div>
+    )}
+    </>
   );
 }

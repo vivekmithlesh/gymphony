@@ -43,6 +43,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { supabase } from "@/supabase";
+import { useAuth } from "@/lib/auth-context";
 import { initiatePhonePePayment, finalizeUpgrade } from "@/lib/phonepe";
 import { hasAccess } from "@/lib/permissions";
 import { WallQRTab } from "@/components/WallQRTab";
@@ -300,6 +301,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
 
   // ── Billing state ───────────────────────────────────────────────────────────
   const [isProcessingBilling, setIsProcessingBilling] = useState(false);
+  const { user } = useAuth();
 
   // ── Init ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -308,15 +310,14 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
   }, []);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setUserId(session.user.id);
-        fetchSettings(session.user.id, session.user.email ?? "");
-      } else {
-        setIsLoadingSettings(false);
-      }
-    });
-  }, []);
+    if (user) {
+      setUserId(user.id);
+      fetchSettings(user.id, user.email ?? "");
+    } else {
+      setIsLoadingSettings(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   useEffect(() => {
     const lat = toFiniteNumber(settings.latitude);
@@ -646,8 +647,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
 
   // ── Plans ─────────────────────────────────────────────────────────────────────
   const fetchPlans = useCallback(async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user?.id) return;
+    if (!user?.id) return;
 
     plansAbortRef.current?.abort();
     plansAbortRef.current = new AbortController();
@@ -659,7 +659,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
         const { data: row } = await supabase
           .from("gym_settings")
           .select("id")
-          .eq("gym_owner_id", session.user.id)
+          .eq("gym_owner_id", user.id)
           .maybeSingle();
         resolvedGymId = row?.id ?? null;
         if (resolvedGymId) setGymId(resolvedGymId);
@@ -1686,7 +1686,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                     </Card>
 
                     {/* Pro */}
-                    <Card className={`relative flex flex-col overflow-hidden border-none bg-linear-to-b from-[#1a1a2e] to-[#16213e] text-white shadow-glow ${settings.plan_type === "Pro" ? "ring-4 ring-primary/30" : ""}`}>
+                    <Card className={`relative flex flex-col overflow-hidden border-none bg-linear-to-b from-[#2a2545] to-[#1e1b34] text-white shadow-glow ${settings.plan_type === "Pro" ? "ring-4 ring-primary/30" : ""}`}>
                       <div className="absolute right-4 top-4">
                         <Badge className="flex items-center gap-1 border-none bg-primary px-3 py-1 text-[10px] font-bold text-white">
                           <Sparkles className="h-3 w-3" />Most popular

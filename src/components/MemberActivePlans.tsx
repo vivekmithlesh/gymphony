@@ -2,11 +2,12 @@ import React, { useEffect, useState, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
-import { CalendarDays, Award, Clock, Loader2, Zap, CreditCard, CheckCircle2, ChevronLeft, ChevronRight } from "lucide-react";
+import { CalendarDays, Award, Clock, Loader2, Zap, CreditCard, CheckCircle2 } from "lucide-react";
 import { supabase } from "@/supabase";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { MemberUpiCheckout } from "@/components/MemberUpiCheckout";
+import { PremiumSyncing } from "@/components/PremiumLoader";
 
 interface MemberActivePlansProps {
   memberId: string;
@@ -26,6 +27,7 @@ interface MemberProfile {
   full_name?: string;
   membership_plan?: string;
   joined_at?: string;
+  subscription_start?: string;
   subscription_end_date?: string;
   subscription_status?: string;
   gym_id?: string;
@@ -48,11 +50,30 @@ export function MemberActivePlans({ memberId }: MemberActivePlansProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   const [daysRemaining, setDaysRemaining] = useState<number | null>(null);
+  // The date the *current subscription* began — i.e. the latest approved
+  // (Success) payment. This is distinct from the gym-join date (created_at),
+  // which now lives on the Virtual ID Card. Null until a plan is purchased.
+  const [subscriptionStart, setSubscriptionStart] = useState<string | null>(null);
   const [showPlansModal, setShowPlansModal] = useState(false);
-  const [planIndex, setPlanIndex] = useState(0);
   const [gymInfo, setGymInfo] = useState<GymInfo | null>(null);
   const [checkoutPlan, setCheckoutPlan] = useState<GymPlan | null>(null);
   const [showCheckout, setShowCheckout] = useState(false);
+
+  // Subscription start = the latest Success payment. Members can read their own
+  // payments (RLS: payments_member_select), so this is a direct lookup. Returns
+  // null for owner-activated members who have no payment row — the render then
+  // derives a start from expiry minus the plan duration.
+  const fetchSubscriptionStart = useCallback(async () => {
+    const { data } = await supabase
+      .from("payments")
+      .select("payment_date, created_at")
+      .eq("member_id", memberId)
+      .eq("status", "Success")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    setSubscriptionStart(data?.payment_date || data?.created_at || null);
+  }, [memberId]);
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -64,7 +85,7 @@ export function MemberActivePlans({ memberId }: MemberActivePlansProps) {
       // query, so we read the real ones.
       const { data: profileData, error: profileError } = await supabase
         .from("profiles")
-        .select("id, full_name, membership_plan, created_at, expiry_date, gym_id, status")
+        .select("id, full_name, membership_plan, created_at, subscription_start, expiry_date, gym_id, status")
         .eq("id", memberId)
         .maybeSingle();
 
@@ -87,12 +108,14 @@ export function MemberActivePlans({ memberId }: MemberActivePlansProps) {
           gym_id: finalGymId,
           membership_plan: profileData?.membership_plan || memberData?.membership_plan || "",
           joined_at: profileData?.created_at || memberData?.joining_date,
+          subscription_start: profileData?.subscription_start,
           subscription_end_date: profileData?.expiry_date || memberData?.expiry_date,
           subscription_status: profileData?.status || memberData?.status || "Inactive"
         };
 
         setProfile(mergedProfile);
         calculateDaysRemaining(mergedProfile.subscription_end_date);
+        fetchSubscriptionStart();
         fetchGymPlans(finalGymId);
         fetchGymInfo(finalGymId);
       } else {
@@ -105,7 +128,7 @@ export function MemberActivePlans({ memberId }: MemberActivePlansProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [memberId]);
+  }, [memberId, fetchSubscriptionStart]);
 
   const fetchGymPlans = async (gymId: string) => {
     try {
@@ -236,11 +259,13 @@ export function MemberActivePlans({ memberId }: MemberActivePlansProps) {
             gym_id: row.gym_id,
             membership_plan: row.membership_plan,
             joined_at: row.created_at,
+            subscription_start: row.subscription_start,
             subscription_end_date: row.expiry_date,
             subscription_status: row.status,
           };
           setProfile(mapped);
           calculateDaysRemaining(mapped.subscription_end_date);
+          fetchSubscriptionStart(); // approval may have added a Success payment
           if (mapped.gym_id) fetchGymPlans(mapped.gym_id);
         }
       )
@@ -330,8 +355,8 @@ export function MemberActivePlans({ memberId }: MemberActivePlansProps) {
   if (isLoading) {
     return (
       <Card className="bg-white rounded-3xl border border-slate-200 shadow-sm">
-        <CardContent className="p-8 flex items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <CardContent className="p-8">
+          <PremiumSyncing label="Loading subscription…" />
         </CardContent>
       </Card>
     );
@@ -369,10 +394,19 @@ export function MemberActivePlans({ memberId }: MemberActivePlansProps) {
     },
   }[planState];
 
-  // Show only the top 3 plans, one at a time via the carousel arrows.
-  const topPlans = gymPlans.slice(0, 3);
-  const safeIndex = topPlans.length ? (((planIndex % topPlans.length) + topPlans.length) % topPlans.length) : 0;
-  const currentPlan = topPlans[safeIndex];
+  // When the subscription started. Prefer the recorded subscription_start
+  // (written by approve_payment), then the latest Success payment; finally, for
+  // legacy/owner-activated members with neither, derive it from expiry minus the
+  // matched plan's duration so the card still shows an honest window.
+  const matchedPlan = gymPlans.find((p) => p.plan_name === profile?.membership_plan);
+  const startDate: string | null =
+    profile?.subscription_start ||
+    subscriptionStart ||
+    (profile?.subscription_end_date && matchedPlan
+      ? new Date(
+          new Date(profile.subscription_end_date).getTime() - matchedPlan.duration_days * 86400000,
+        ).toISOString()
+      : null);
 
   return (
     <Card className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
@@ -385,9 +419,11 @@ export function MemberActivePlans({ memberId }: MemberActivePlansProps) {
           <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-1">
             <div className="flex items-center gap-2 text-slate-500">
               <CalendarDays className="h-4 w-4" />
-              <span className="text-[10px] font-black uppercase tracking-wider">Joined</span>
+              <span className="text-[10px] font-black uppercase tracking-wider">Started</span>
             </div>
-            <p className="text-sm font-bold text-slate-900">{formatDate(profile?.joined_at)}</p>
+            <p className="text-sm font-bold text-slate-900">
+              {planState === "none" ? "—" : formatDate(startDate ?? undefined)}
+            </p>
           </div>
 
           <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-1">
@@ -432,95 +468,56 @@ export function MemberActivePlans({ memberId }: MemberActivePlansProps) {
               </div>
             )}
 
-            {topPlans.length > 0 && currentPlan ? (
-              <div>
-                <div className="flex items-center gap-2">
-                  {topPlans.length > 1 && (
-                    <button
-                      onClick={() => setPlanIndex((i) => i - 1)}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition-colors hover:bg-slate-50"
-                      aria-label="Previous plan"
+            {gymPlans.length > 0 ? (
+              // Vertical scrollable list — every plan visible, no carousel.
+              <div className="max-h-[300px] space-y-3 overflow-y-auto overflow-x-hidden pr-2 custom-scrollbar">
+                {gymPlans.map((plan) => {
+                  const isCurrentPlan = profile?.membership_plan === plan.plan_name && isPlanActive;
+                  return (
+                    <div
+                      key={plan.id}
+                      className={`flex items-center justify-between gap-3 rounded-2xl border p-4 transition-all ${
+                        isCurrentPlan
+                          ? "bg-primary/5 border-primary/30 ring-1 ring-primary/10"
+                          : "bg-white border-slate-100 shadow-sm"
+                      }`}
                     >
-                      <ChevronLeft className="h-4 w-4" />
-                    </button>
-                  )}
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-slate-900">{plan.plan_name}</p>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          {plan.duration_days} Days · <span className="text-primary">₹{plan.price}</span>
+                        </p>
+                      </div>
 
-                  {(() => {
-                    const isCurrentPlan = profile?.membership_plan === currentPlan.plan_name && isPlanActive;
-                    return (
-                      <div
-                        className={`flex-1 p-4 rounded-2xl border transition-all ${
-                          isCurrentPlan
-                            ? "bg-primary/5 border-primary/20 ring-1 ring-primary/10"
-                            : "bg-white border-slate-100 shadow-sm"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-3">
-                          <div>
-                            <p className="text-sm font-bold text-slate-900">{currentPlan.plan_name}</p>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{currentPlan.duration_days} Days</p>
-                          </div>
-                          <p className="text-lg font-black text-primary">₹{currentPlan.price}</p>
-                        </div>
-
+                      {isCurrentPlan ? (
+                        <Badge className="shrink-0 gap-1 rounded-xl border-none bg-emerald-500 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-white hover:bg-emerald-500">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Current Plan
+                        </Badge>
+                      ) : (
                         <Button
-                          onClick={() => handlePayFees(currentPlan)}
-                          disabled={isProcessingPayment || isCurrentPlan}
-                          className={`w-full h-11 rounded-xl font-bold transition-all ${
-                            isCurrentPlan
-                              ? "bg-emerald-500 text-white cursor-default hover:bg-emerald-500"
-                              : "bg-slate-900 text-white hover:bg-slate-800"
-                          }`}
+                          onClick={() => handlePayFees(plan)}
+                          disabled={isProcessingPayment}
+                          className="h-10 shrink-0 rounded-xl bg-slate-900 px-4 font-bold text-white hover:bg-slate-800"
                         >
                           {isProcessingPayment ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : isCurrentPlan ? (
-                            <span className="flex items-center gap-2">
-                              <CheckCircle2 className="h-4 w-4" />
-                              Current Active Plan
-                            </span>
                           ) : (
-                            <span className="flex items-center gap-2">
+                            <span className="flex items-center gap-1.5">
                               <CreditCard className="h-4 w-4" />
-                              {planState === "expired" ? "Renew Now" : planState === "none" ? "Pay Fees" : "Upgrade / Pay Fees"}
+                              {planState === "expired" ? "Renew" : "Buy Now"}
                             </span>
                           )}
                         </Button>
-                      </div>
-                    );
-                  })()}
-
-                  {topPlans.length > 1 && (
-                    <button
-                      onClick={() => setPlanIndex((i) => i + 1)}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition-colors hover:bg-slate-50"
-                      aria-label="Next plan"
-                    >
-                      <ChevronRight className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-
-                {topPlans.length > 1 && (
-                  <div className="mt-3 flex items-center justify-center gap-1.5">
-                    {topPlans.map((_, i) => (
-                      <button
-                        key={i}
-                        onClick={() => setPlanIndex(i)}
-                        aria-label={`Go to plan ${i + 1}`}
-                        className={`h-1.5 rounded-full transition-all ${i === safeIndex ? "w-5 bg-primary" : "w-1.5 bg-slate-300"}`}
-                      />
-                    ))}
-                  </div>
-                )}
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <div className="text-center py-8 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
                 {isLoading ? (
-                  <>
-                    <p className="text-xs text-slate-400 font-bold">Checking for available plans...</p>
-                    <Loader2 className="h-4 w-4 animate-spin mx-auto mt-2 text-primary/30" />
-                  </>
+                  <PremiumSyncing label="Checking for available plans…" />
                 ) : (
                   <p className="text-xs text-slate-400 font-bold">No plans configured for this gym.</p>
                 )}

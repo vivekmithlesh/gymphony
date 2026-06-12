@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase } from '@/supabase';
+import { useAuth } from '@/lib/auth-context';
 import { evaluatePassPreLookup, evaluateMember } from '@/lib/kioskPass';
 
 interface CheckIn {
@@ -49,6 +50,7 @@ export function KioskMode() {
   const [hasLocation, setHasLocation] = useState(true);
   const [isResolvingGym, setIsResolvingGym] = useState(true);
   const [isAuthed, setIsAuthed] = useState(true);
+  const { user } = useAuth();
 
   // ── Check-in feed ───────────────────────────────────────────────────────────
   const [checkIns, setCheckIns] = useState<CheckIn[]>([]);
@@ -88,8 +90,7 @@ export function KioskMode() {
 
     const setup = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const ownerId = session?.user?.id ?? null;
+        const ownerId = user?.id ?? null;
         ownerIdRef.current = ownerId;
 
         if (!ownerId) {
