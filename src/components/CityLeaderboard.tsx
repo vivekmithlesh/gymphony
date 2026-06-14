@@ -299,7 +299,7 @@ export const CityLeaderboard = () => {
           <h2 className="flex items-center gap-2 text-lg font-black uppercase tracking-tight text-slate-900">
             <Medal className="h-5 w-5 text-purple-600" /> The Chasing Pack
           </h2>
-          <div className="space-y-2.5">
+          <div className="space-y-2.5 max-h-[60vh] overflow-y-auto custom-scrollbar">
             {runnersUp.map((gym) => {
               const isMine = gym.gym_id === myGymId;
               const rankBadge =

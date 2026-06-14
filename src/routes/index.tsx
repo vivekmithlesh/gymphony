@@ -1,11 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Navbar } from "@/components/Navbar";
 import { Hero } from "@/components/Hero";
-import { DiscoverySection } from "@/components/DiscoverySection";
-import { Problems } from "@/components/Problems";
+import { WhyGymphony } from "@/components/WhyGymphony";
 import { Solutions } from "@/components/Solutions";
+import { KioskHero } from "@/components/KioskHero";
+import { BusinessImpact } from "@/components/BusinessImpact";
 import { AppPreview } from "@/components/AppPreview";
-import { Marketing } from "@/components/Marketing";
+import { DiscoverySection } from "@/components/DiscoverySection";
+import { Objections } from "@/components/Objections";
+import { Trust } from "@/components/Trust";
 import { Pricing } from "@/components/Pricing";
 import { CTA } from "@/components/CTA";
 import { Footer } from "@/components/Footer";
@@ -13,17 +16,17 @@ import { Footer } from "@/components/Footer";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Gymphony — Stop chasing fees. Start growing your gym." },
+      { title: "Gymphony — Collect Every Fee. Keep Every Member. Run Your Gym Smarter." },
       {
         name: "description",
         content:
-          "Gymphony is the all-in-one gym management platform. Automate payments, track attendance with QR, and get discovered by new members in your city.",
+          "Gymphony helps gym owners automate attendance, track revenue, manage memberships, monitor dues, and run their entire fitness business from one powerful dashboard. 7-day free trial. No setup fees.",
       },
-      { property: "og:title", content: "Gymphony — Modern Gym Management Platform" },
+      { property: "og:title", content: "Gymphony — The complete gym management platform" },
       {
         property: "og:description",
         content:
-          "Automate payments, track attendance, and get discovered by new members—all in one premium platform.",
+          "Automate attendance, track revenue, manage memberships and dues from one dashboard. QR check-in, kiosk mode, revenue analytics. Start your 7-day free trial.",
       },
     ],
   }),
@@ -36,11 +39,14 @@ function Index() {
       <Navbar />
       <main>
         <Hero />
-        <DiscoverySection />
-        <Problems />
+        <WhyGymphony />
         <Solutions />
+        <KioskHero />
+        <BusinessImpact />
         <AppPreview />
-        <Marketing />
+        <DiscoverySection />
+        <Objections />
+        <Trust />
         <Pricing />
         <CTA />
       </main>

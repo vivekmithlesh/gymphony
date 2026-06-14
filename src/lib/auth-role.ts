@@ -46,5 +46,16 @@ export const resolveUserRole = async (
     return "member";
   }
 
+  // Reliable fallback: the role stamped into the auth user's metadata at signUp
+  // ({ data: { role: "owner" } }). This works even when the profile row isn't
+  // readable yet (RLS / replication lag right after signup), so a freshly
+  // signed-in user always resolves to a role and the redirect never stalls.
+  const metaRole = normalizeRole(
+    user.user_metadata?.role ?? user.app_metadata?.role,
+  );
+  if (metaRole) {
+    return metaRole;
+  }
+
   return null;
 };

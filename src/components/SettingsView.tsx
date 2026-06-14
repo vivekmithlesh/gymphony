@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { z } from "zod";
 import {
   Settings,
   Building2,
@@ -44,8 +45,19 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { supabase } from "@/supabase";
 import { useAuth } from "@/lib/auth-context";
-import { initiatePhonePePayment, finalizeUpgrade } from "@/lib/phonepe";
-import { hasAccess } from "@/lib/permissions";
+import { startSubscriptionCheckout } from "@/lib/razorpay";
+import {
+  PLAN_LIST,
+  PLANS,
+  resolveSubscription,
+  formatINR,
+  TRIAL_DAYS,
+  PRO_IS_WAITLIST,
+  isComingSoonHighlight,
+  type PlanTier,
+  type BillingCycle,
+} from "@/lib/plans";
+import { subscriptionHasFeature } from "@/lib/permissions";
 import { WallQRTab } from "@/components/WallQRTab";
 import { GymJoinQRCode } from "@/components/GymJoinQRCode";
 import { TimePicker } from "@/components/TimePicker";
@@ -64,8 +76,16 @@ const SUPPORT_WHATSAPP_URL = `https://wa.me/${SUPPORT_WHATSAPP_NUMBER}?text=${en
   "Hi Gymphony Support, I need help with my gym dashboard",
 )}`;
 const ALIGARH_CENTER: [number, number] = [27.8974, 78.088];
-const IMAGE_MAX_BYTES = 25 * 1024 * 1024; // 25 MB
-const VIDEO_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
+const IMAGE_MAX_BYTES = 5 * 1024 * 1024;  // 5 MB  (hard limit, pre-compression)
+const VIDEO_MAX_BYTES = 15 * 1024 * 1024; // 15 MB (hard limit)
+
+// Client-side image compression target — keeps quality for web/mobile while
+// slashing storage + bandwidth cost at scale (10k+ users).
+const IMAGE_COMPRESSION_OPTIONS = {
+  maxSizeMB: 0.5, // 500 KB
+  maxWidthOrHeight: 1080,
+  useWebWorker: true,
+};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -93,14 +113,22 @@ type GymSettings = {
   allow_mock_payments: boolean;
   opening_time: string;
   closing_time: string;
+  // Optional second ("evening") shift — gyms that close mid-afternoon. Same
+  // "HH:MM" 24-hour string format as the primary (morning) shift. null when off.
+  evening_opening_time: string | null;
+  evening_closing_time: string | null;
   description: string;
   whatsapp_reminders: boolean;
   daily_summary_email: boolean;
   notify_new_member: boolean;
   notify_pending_payment: boolean;
   notify_low_stock: boolean;
-  plan_type: "Free" | "Pro";
-  plan_status: "Active" | "Inactive" | "Expired";
+  plan_type: string | null;
+  plan_tier: string | null;
+  plan_status: string | null;
+  trial_ends_at: string | null;
+  billing_cycle: string | null;
+  subscription_start: string | null;
   expiry_date: string | null;
   terms_url: string | null;
   privacy_url: string | null;
@@ -156,46 +184,61 @@ const buildDefaultSettings = (userId: string, email: string): Omit<GymSettings, 
   allow_mock_payments: false,
   opening_time: "",
   closing_time: "",
+  evening_opening_time: null,
+  evening_closing_time: null,
   description: "",
   whatsapp_reminders: true,
   daily_summary_email: false,
   notify_new_member: true,
   notify_pending_payment: true,
   notify_low_stock: true,
-  plan_type: "Free",
-  plan_status: "Active",
+  plan_type: null,
+  plan_tier: "trial",
+  plan_status: "trial",
+  trial_ends_at: null,
+  billing_cycle: "monthly",
+  subscription_start: null,
   expiry_date: null,
   terms_url: null,
   privacy_url: null,
   refund_url: null,
 });
 
-async function compressImage(file: File, maxWidth = 1920, quality = 0.8): Promise<File> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const scale = Math.min(1, maxWidth / img.width);
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(img.width * scale);
-      canvas.height = Math.round(img.height * scale);
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return resolve(file);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) return resolve(file);
-          resolve(new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), { type: "image/jpeg" }));
-        },
-        "image/jpeg",
-        quality,
-      );
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
-    img.src = url;
-  });
+// Compress an image to <= 0.5 MB / 1080px using browser-image-compression
+// (Web Worker, off the main thread). Dynamically imported so the library stays
+// out of the initial bundle. Falls back to the original file on any failure.
+async function compressImage(file: File): Promise<File> {
+  try {
+    const imageCompression = (await import("browser-image-compression")).default;
+    // Returns a File sized to the options below (≤0.5 MB / 1080px).
+    return await imageCompression(file, IMAGE_COMPRESSION_OPTIONS);
+  } catch {
+    return file; // never block an upload because compression failed
+  }
 }
+
+// Zod validation for a single gallery file: type must be image/video and the
+// raw size must be within the hard limits (images 5 MB, videos 15 MB).
+const galleryFileSchema = z
+  .object({
+    name: z.string(),
+    size: z.number(),
+    type: z.string(),
+  })
+  .superRefine((f, ctx) => {
+    const isImage = f.type.startsWith("image/");
+    const isVideo = f.type.startsWith("video/") || f.name.toLowerCase().endsWith(".mp4");
+    if (!isImage && !isVideo) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "unsupported type" });
+      return;
+    }
+    if (isImage && f.size > IMAGE_MAX_BYTES) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "exceeds 5 MB" });
+    }
+    if (isVideo && f.size > VIDEO_MAX_BYTES) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "exceeds 15 MB" });
+    }
+  });
 
 // ─── SSR-safe Leaflet Map ─────────────────────────────────────────────────────
 
@@ -249,6 +292,47 @@ function LeafletMap({ center, zoom, className, children }: LeafletMapProps) {
   );
 }
 
+// ─── Operating-hours validation ───────────────────────────────────────────────
+
+// "HH:MM" 24h → minutes since midnight (TimePicker's storage format).
+const timeToMinutes = (v?: string | null): number | null => {
+  if (!v) return null;
+  const [h, m] = v.split(":").map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return h * 60 + m;
+};
+
+// First (morning) shift is mandatory; the evening shift is optional, but if
+// EITHER evening field is set, BOTH are required and must form a valid window.
+const gymHoursSchema = z
+  .object({
+    opening_time: z.string().min(1, "Opening time is required"),
+    closing_time: z.string().min(1, "Closing time is required"),
+    evening_opening_time: z.string().nullable().optional(),
+    evening_closing_time: z.string().nullable().optional(),
+  })
+  .superRefine((d, ctx) => {
+    const hasEvening = !!(d.evening_opening_time || d.evening_closing_time);
+    if (!hasEvening) return;
+    if (!d.evening_opening_time || !d.evening_closing_time) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["evening_closing_time"],
+        message: "Set both an evening opening and closing time.",
+      });
+      return;
+    }
+    const eo = timeToMinutes(d.evening_opening_time);
+    const ec = timeToMinutes(d.evening_closing_time);
+    if (eo != null && ec != null && ec <= eo) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["evening_closing_time"],
+        message: "Evening closing time must be after evening opening time.",
+      });
+    }
+  });
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function SettingsView({ initialCategory = "Gym Profile" }: { initialCategory?: string }) {
@@ -289,6 +373,15 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
 
   // ── Gallery state ───────────────────────────────────────────────────────────
   const [isUploadingGallery, setIsUploadingGallery] = useState(false);
+
+  // Billing cycle toggle for the SaaS plan cards (monthly | yearly).
+  const [billingCycle, setBillingCycle] = useState<BillingCycle>("monthly");
+
+  // Whether the optional evening (second) shift is being shown. Seeded from the
+  // loaded settings (effect below) so a saved evening shift reopens expanded.
+  const [showEveningShift, setShowEveningShift] = useState(false);
+  // Effective owner SaaS subscription, resolved from gym_settings (trial/expiry aware).
+  const billingSub = resolveSubscription(settings);
 
   // ── Plans state ─────────────────────────────────────────────────────────────
   const [plans, setPlans] = useState<Plan[]>([]);
@@ -403,6 +496,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
           logo_url: "ALTER TABLE gym_settings ADD COLUMN logo_url TEXT;",
           latitude: "ALTER TABLE gym_settings ADD COLUMN latitude NUMERIC, longitude NUMERIC;",
           opening_time: "ALTER TABLE gym_settings ADD COLUMN opening_time TEXT, closing_time TEXT, description TEXT, address TEXT;",
+          evening_opening_time: "ALTER TABLE gym_settings ADD COLUMN evening_opening_time TEXT, evening_closing_time TEXT;",
           gym_photos: "ALTER TABLE gym_settings ADD COLUMN gym_photos TEXT[], gym_videos TEXT[];",
         };
         const hint = Object.entries(schemaHints).find(([key]) => msg.includes(key));
@@ -418,6 +512,33 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
     },
     [userId, settings],
   );
+
+  // ── Evening (second) shift ──────────────────────────────────────────────────
+  // Reopen the evening-shift block if the gym already has one saved.
+  useEffect(() => {
+    if (settings.evening_opening_time || settings.evening_closing_time) {
+      setShowEveningShift(true);
+    }
+  }, [settings.evening_opening_time, settings.evening_closing_time]);
+
+  // Persist an evening time, then validate the full window with zod once both
+  // ends are set (the schema requires both + open < close when the shift is on).
+  const setEveningTime = useCallback(
+    (field: "evening_opening_time" | "evening_closing_time", v: string) => {
+      const candidate = { ...settings, [field]: v };
+      void persistSettings({ [field]: v });
+      const result = gymHoursSchema.safeParse(candidate);
+      if (!result.success && candidate.evening_opening_time && candidate.evening_closing_time) {
+        toast.error(result.error.issues[0]?.message ?? "Invalid evening hours");
+      }
+    },
+    [settings, persistSettings],
+  );
+
+  const removeEveningShift = useCallback(() => {
+    setShowEveningShift(false);
+    void persistSettings({ evening_opening_time: null, evening_closing_time: null });
+  }, [persistSettings]);
 
   // ── Logo upload ───────────────────────────────────────────────────────────────
   const handleLogoChange = useCallback(
@@ -461,16 +582,18 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
         const isImage = file.type.startsWith("image/");
         const isVideo = file.type.startsWith("video/") || file.name.toLowerCase().endsWith(".mp4");
 
-        if (!isImage && !isVideo) { toast.error(`${file.name}: unsupported type, skipped.`); continue; }
-        if (isImage && file.size > IMAGE_MAX_BYTES) { toast.error(`${file.name}: exceeds 25 MB, skipped.`); continue; }
-        if (isVideo && file.size > VIDEO_MAX_BYTES) { toast.error(`${file.name}: exceeds 50 MB, skipped.`); continue; }
+        // Validate type + hard size limits via the shared zod schema.
+        const check = galleryFileSchema.safeParse({ name: file.name, size: file.size, type: file.type });
+        if (!check.success) {
+          toast.error(`${file.name}: ${check.error.issues[0]?.message ?? "invalid file"}, skipped.`);
+          continue;
+        }
 
+        // Compress images on the client (≤0.5 MB / 1080px) BEFORE upload to cut
+        // Supabase storage + bandwidth cost. Videos are uploaded as-is.
         let uploadFile: File = file;
         if (isImage) {
-          try {
-            const compressed = await compressImage(file);
-            if (compressed.size <= IMAGE_MAX_BYTES) uploadFile = compressed;
-          } catch { /* use original */ }
+          uploadFile = await compressImage(file);
         }
 
         const safeName = file.name.replace(/[^a-zA-Z0-9_.-]/g, "_");
@@ -806,13 +929,14 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
     if (!userId) return;
     setIsProcessingBilling(true);
     try {
-      const expiryDate = new Date();
-      expiryDate.setDate(expiryDate.getDate() + 30);
-      const updates = { plan_type: "Free" as const, plan_status: "Active" as const, expiry_date: expiryDate.toISOString() };
-      const { error } = await supabase.from("gym_settings").update(updates).eq("gym_owner_id", userId);
+      // Plan columns are locked down (20260621) — the trial is started ONLY via
+      // the SECURITY DEFINER RPC, which is one-time (no trial resets).
+      const { error } = await supabase.rpc("app_start_owner_trial");
       if (error) throw error;
-      setSettings((prev) => ({ ...prev, ...updates }));
-      toast.success("30-day Free Trial started!");
+      // Re-read the authoritative row the server wrote.
+      const { data } = await supabase.from("gym_settings").select("*").eq("gym_owner_id", userId).single();
+      if (data) setSettings(data);
+      toast.success(`${TRIAL_DAYS}-day free trial started — full Growth access unlocked!`);
     } catch (err: unknown) {
       toast.error("Trial error: " + (err as Error).message);
     } finally {
@@ -820,54 +944,30 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
     }
   }, [userId]);
 
-  const handleGetPro = useCallback(async () => {
-    if (currency === "INR") {
+  // Select / upgrade to a paid tier via Razorpay. The client NEVER writes the
+  // plan (gym_settings plan columns are locked down — 20260621); the verified
+  // razorpay-webhook grants it server-side. We just open checkout and refresh.
+  const handleSelectPlan = useCallback(
+    async (tier: PlanTier, cycle: BillingCycle) => {
       if (!userId) return;
-      await initiatePhonePePayment(
-        1999,
-        userId,
-        async () => {
-          const success = await finalizeUpgrade(userId);
-          if (success) {
-            const { data } = await supabase.from("gym_settings").select("*").eq("gym_owner_id", userId).single();
-            if (data) setSettings(data);
-          }
+      await startSubscriptionCheckout({
+        tier,
+        cycle,
+        ownerId: userId,
+        ownerEmail: settings.owner_email,
+        ownerName: settings.gym_name,
+        setProcessing: setIsProcessingBilling,
+        onActivated: async () => {
+          const { data } = await supabase.from("gym_settings").select("*").eq("gym_owner_id", userId).single();
+          if (data) setSettings(data);
         },
-        setIsProcessingBilling,
-      );
-    } else {
-      const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
-      if (!STRIPE_KEY) { toast.error("Stripe key missing."); return; }
-      setIsProcessingBilling(true);
-      try {
-        const { loadStripe } = await import("@stripe/stripe-js");
-        const stripe = await loadStripe(STRIPE_KEY);
-        if (!stripe) throw new Error("Stripe failed to load.");
-        toast.info("Redirecting to Stripe...");
-        setTimeout(() => finalizeUpgrade(userId), 2000);
-      } catch (err: unknown) {
-        toast.error((err as Error).message);
-        setIsProcessingBilling(false);
-      }
-    }
-  }, [currency, userId]);
+      });
+    },
+    [userId, settings.owner_email, settings.gym_name],
+  );
 
-  // FLOW 1 — Mock SaaS checkout (gym owner → platform). Shows a button spinner,
-  // simulates the gateway round-trip (2s) so the UI never freezes, then a success
-  // toast. No real charge: wire the Razorpay order + webhook later (handleGetPro
-  // above holds the real PhonePe/Stripe path to re-enable).
-  const mockSaaSCheckout = useCallback(async () => {
-    if (isProcessingBilling) return;
-    setIsProcessingBilling(true);
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      toast.success("Mock Gateway: Subscription Activated. Connect Razorpay API here later.");
-    } catch {
-      toast.error("Could not start checkout. Please try again.");
-    } finally {
-      setIsProcessingBilling(false);
-    }
-  }, [isProcessingBilling]);
+  // (Legacy mock/PhonePe/Stripe upgrade handlers removed — all paid upgrades now
+  // go through handleSelectPlan → Razorpay → verified webhook → app_set_owner_plan.)
 
   // ── Security / Support ────────────────────────────────────────────────────────
   const handlePasswordReset = useCallback(async () => {
@@ -1064,18 +1164,65 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                         </div>
 
                         <div className="space-y-2">
-                          <Label className="text-slate-600">Opening Time</Label>
+                          <Label className="text-slate-600">{showEveningShift ? "Morning Opening Time" : "Opening Time"}</Label>
                           <TimePicker
                             value={settings.opening_time}
                             onChange={(v) => persistSettings({ opening_time: v })}
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label className="text-slate-600">Closing Time</Label>
+                          <Label className="text-slate-600">{showEveningShift ? "Morning Closing Time" : "Closing Time"}</Label>
                           <TimePicker
                             value={settings.closing_time}
                             onChange={(v) => persistSettings({ closing_time: v })}
                           />
+                        </div>
+
+                        {/* Optional evening (second) shift for gyms that close mid-afternoon. */}
+                        <div className="space-y-3 sm:col-span-2">
+                          {!showEveningShift ? (
+                            <button
+                              type="button"
+                              onClick={() => setShowEveningShift(true)}
+                              className="inline-flex items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-primary transition-colors hover:border-primary/50 hover:bg-primary/5"
+                            >
+                              <Plus className="h-4 w-4" />
+                              Add Evening Shift
+                            </button>
+                          ) : (
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+                              <div className="mb-3 flex items-center justify-between">
+                                <Label className="text-slate-600">Evening Shift</Label>
+                                <button
+                                  type="button"
+                                  onClick={removeEveningShift}
+                                  className="inline-flex items-center gap-1 text-xs font-semibold text-red-500 transition-colors hover:text-red-600"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Remove
+                                </button>
+                              </div>
+                              <div className="grid gap-4 sm:grid-cols-2">
+                                <div className="space-y-2">
+                                  <Label className="text-slate-600">Evening Opening Time</Label>
+                                  <TimePicker
+                                    value={settings.evening_opening_time}
+                                    onChange={(v) => setEveningTime("evening_opening_time", v)}
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <Label className="text-slate-600">Evening Closing Time</Label>
+                                  <TimePicker
+                                    value={settings.evening_closing_time}
+                                    onChange={(v) => setEveningTime("evening_closing_time", v)}
+                                  />
+                                </div>
+                              </div>
+                              <p className="mt-2 text-xs text-muted-foreground">
+                                For gyms that close mid-afternoon (e.g. morning 5:00 AM–10:00 AM, evening 4:00 PM–10:00 PM).
+                              </p>
+                            </div>
+                          )}
                         </div>
 
                         <div className="space-y-2 sm:col-span-2">
@@ -1154,7 +1301,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                         >
                           {isUploadingGallery ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Uploading…</> : "Add Media"}
                         </Button>
-                        <p className="text-sm text-muted-foreground">Images up to 25 MB · Videos up to 50 MB</p>
+                        <p className="text-sm text-muted-foreground">Images up to 5 MB · Videos up to 15 MB</p>
                       </div>
 
                       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -1432,7 +1579,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                       <CardDescription>Control your dashboard experience.</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                      {hasAccess(settings.plan_type, "auto_reminders") ? (
+                      {subscriptionHasFeature(settings, "auto_reminders") ? (
                         <div className="flex items-center justify-between">
                           <div className="space-y-0.5">
                             <Label className="font-medium text-slate-900">Automatic Reminders</Label>
@@ -1585,7 +1732,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                   <CardContent className="py-10 text-center">
                     <p className="mb-6 text-muted-foreground">Have questions about Gymphony?</p>
                     <div className="mx-auto flex max-w-xs flex-col gap-3">
-                      {hasAccess(settings.plan_type, "whatsapp_support") ? (
+                      {subscriptionHasFeature(settings, "whatsapp_support") ? (
                         <Button
                           onClick={() => window.open(SUPPORT_WHATSAPP_URL, "_blank", "noopener,noreferrer")}
                           className="rounded-xl bg-primary px-8 font-bold text-white shadow-lg shadow-primary/20"
@@ -1619,125 +1766,116 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                   {/* Subscription status */}
                   <div className="flex flex-col gap-4 rounded-[2rem] border border-slate-100 bg-white p-6 shadow-soft md:flex-row md:items-center md:justify-between">
                     <div className="flex items-center gap-4">
-                      <div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${settings.plan_type === "Pro" ? "bg-primary/10 text-primary" : "bg-slate-100 text-slate-400"}`}>
-                        {settings.plan_type === "Pro" ? <Crown className="h-6 w-6" /> : <ShieldCheck className="h-6 w-6" />}
+                      <div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${billingSub.tier === "pro" ? "bg-primary/10 text-primary" : "bg-slate-100 text-slate-500"}`}>
+                        {billingSub.tier === "pro" ? <Crown className="h-6 w-6" /> : <ShieldCheck className="h-6 w-6" />}
                       </div>
                       <div>
                         <div className="flex items-center gap-2">
-                          <h3 className="text-lg font-black text-slate-900">Current Subscription</h3>
+                          <h3 className="text-lg font-black text-slate-900">Current Plan: {billingSub.plan.name}</h3>
                           <Badge className={`rounded-full border-none px-3 py-0.5 text-[10px] font-black uppercase tracking-widest ${
-                            settings.plan_type === "Pro" ? "bg-primary text-white shadow-glow" : "bg-slate-100 text-slate-500"
+                            billingSub.isTrial ? "bg-amber-100 text-amber-700" : billingSub.status === "active" ? "bg-primary text-white shadow-glow" : "bg-slate-100 text-slate-500"
                           }`}>
-                            {settings.plan_type === "Pro" ? "Active: PRO" : "Free Trial"}
+                            {billingSub.isTrial ? `Trial · ${billingSub.trialDaysLeft}d left` : billingSub.status === "active" ? "Active" : billingSub.status === "expired" ? "Expired" : "Inactive"}
                           </Badge>
                         </div>
                         <p className="mt-0.5 text-sm font-medium text-muted-foreground">
-                          {settings.plan_type === "Pro" && settings.expiry_date
-                            ? <>Next billing: <span className="font-bold text-slate-900">{new Date(settings.expiry_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span></>
-                            : "Upgrade to unlock unlimited members and automation."}
+                          {billingSub.isTrial
+                            ? <>Your free trial ends {billingSub.trialEndsAt ? <span className="font-bold text-slate-900">{billingSub.trialEndsAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span> : "soon"}. Pick a plan to keep your features.</>
+                            : billingSub.status === "active" && settings.expiry_date
+                              ? <>Renews <span className="font-bold text-slate-900">{new Date(settings.expiry_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span> · {Number.isFinite(billingSub.memberLimit) ? `${billingSub.memberLimit.toLocaleString("en-IN")} members` : "Unlimited members"}</>
+                              : "Start your free trial or choose a plan to unlock Gymphony."}
                         </p>
                       </div>
                     </div>
-                    {settings.plan_type !== "Pro" && (
+                    {billingSub.status !== "active" && !billingSub.isTrial && (
                       <Button
-                        onClick={mockSaaSCheckout}
+                        onClick={handleStartTrial}
                         disabled={isProcessingBilling}
                         className="h-12 rounded-xl bg-primary px-6 font-black text-white shadow-glow"
                       >
-                        {isProcessingBilling ? <Loader2 className="h-5 w-5 animate-spin" /> : "Upgrade Now"}
+                        {isProcessingBilling ? <Loader2 className="h-5 w-5 animate-spin" /> : `Start ${TRIAL_DAYS}-Day Free Trial`}
                       </Button>
                     )}
                   </div>
 
-                  {/* Plan cards */}
-                  <div className="grid gap-6 md:grid-cols-2">
-                    {/* Free */}
-                    <Card className={`flex flex-col overflow-hidden border-border shadow-soft ${settings.plan_type === "Free" ? "border-primary/20 ring-2 ring-primary" : "bg-white"}`}>
-                      <CardHeader className="pb-4">
-                        <CardTitle className="text-xl font-bold text-slate-900">Free Trial</CardTitle>
-                        <div className="mt-2 flex items-baseline gap-1">
-                          <span className="text-4xl font-black text-slate-900">₹0</span>
-                          <span className="text-sm font-medium text-muted-foreground">for 1 month</span>
-                        </div>
-                        <CardDescription className="pt-2 leading-relaxed text-slate-500">Everything in Pro. No card required. Cancel anytime.</CardDescription>
-                      </CardHeader>
-                      <CardContent className="pt-0">
-                        <Button
-                          variant="outline"
-                          onClick={handleStartTrial}
-                          disabled={isProcessingBilling || settings.plan_type === "Free" || !!settings.expiry_date}
-                          className="h-12 w-full rounded-full border-slate-200 font-bold text-slate-900"
-                        >
-                          {settings.plan_type === "Free" ? "Currently Active" : "Start Free Trial"}
-                        </Button>
-                      </CardContent>
-                      <CardContent className="grow">
-                        <div className="space-y-4 pt-4">
-                          {["Up to 100 members", "Smart payments + UPI", "QR attendance", "Live dashboard", "Email support"].map((f) => (
-                            <div key={f} className="flex items-center gap-3 text-sm font-medium text-slate-600">
-                              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/5">
-                                <CheckCircle2 className="h-3 w-3 shrink-0 text-primary" />
-                              </div>
-                              {f}
-                            </div>
-                          ))}
-                        </div>
-                      </CardContent>
-                    </Card>
+                  {/* Billing cycle toggle */}
+                  <div className="flex items-center justify-center gap-3">
+                    <button onClick={() => setBillingCycle("monthly")} className={`rounded-full px-5 py-2 text-sm font-bold transition-all ${billingCycle === "monthly" ? "bg-primary text-white shadow-glow" : "bg-slate-100 text-slate-500"}`}>Monthly</button>
+                    <button onClick={() => setBillingCycle("yearly")} className={`flex items-center gap-2 rounded-full px-5 py-2 text-sm font-bold transition-all ${billingCycle === "yearly" ? "bg-primary text-white shadow-glow" : "bg-slate-100 text-slate-500"}`}>
+                      Yearly <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-bold text-green-700">2 months free</span>
+                    </button>
+                  </div>
 
-                    {/* Pro */}
-                    <Card className={`relative flex flex-col overflow-hidden border-none bg-linear-to-b from-[#2a2545] to-[#1e1b34] text-white shadow-glow ${settings.plan_type === "Pro" ? "ring-4 ring-primary/30" : ""}`}>
-                      <div className="absolute right-4 top-4">
-                        <Badge className="flex items-center gap-1 border-none bg-primary px-3 py-1 text-[10px] font-bold text-white">
-                          <Sparkles className="h-3 w-3" />Most popular
-                        </Badge>
-                      </div>
-                      <CardHeader className="pb-4">
-                        <CardTitle className="text-xl font-bold text-white">Pro</CardTitle>
-                        <div className="mt-2 flex items-baseline gap-1">
-                          <span className="text-4xl font-black text-white">₹1,999</span>
-                          <span className="text-sm font-medium text-slate-400">/ month</span>
-                        </div>
-                        <CardDescription className="pt-2 leading-relaxed text-slate-400">For serious gym owners ready to automate and grow.</CardDescription>
-                      </CardHeader>
-                      <CardContent className="pt-0">
-                        {settings.plan_type === "Pro" ? (
-                          <Button
-                            onClick={mockSaaSCheckout}
-                            disabled={isProcessingBilling}
-                            className="h-14 w-full rounded-full bg-white font-black text-slate-900 shadow-xl"
-                          >
-                            {isProcessingBilling ? <Loader2 className="h-5 w-5 animate-spin text-slate-900" /> : "Active Subscription"}
-                          </Button>
-                        ) : (
-                          <Button onClick={mockSaaSCheckout} disabled={isProcessingBilling} className="h-14 w-full rounded-full bg-primary text-lg font-black text-white">
-                            {isProcessingBilling ? <Loader2 className="h-5 w-5 animate-spin" /> : "Get Pro"}
-                          </Button>
-                        )}
-                      </CardContent>
-                      <CardContent className="grow">
-                        <div className="space-y-4 pt-4">
-                          {[
-                            "Unlimited members",
-                            "Smart payments + auto reminders",
-                            "QR attendance + alerts",
-                            "Kiosk mode for check-ins",
-                            "Inventory & stock management",
-                            "Live dashboard & analytics",
-                            "City discovery + leaderboard",
-                            "Public gym profile page",
-                            "Priority WhatsApp support",
-                          ].map((f) => (
-                            <div key={f} className="flex items-center gap-3 text-sm font-medium text-slate-300">
-                              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-white/10">
-                                <CheckCircle2 className="h-3 w-3 shrink-0 text-primary" />
-                              </div>
-                              {f}
+                  {/* Plan cards — driven entirely by the central plan config */}
+                  <div className="grid gap-6 md:grid-cols-3">
+                    {PLAN_LIST.map((p) => {
+                      const isCurrent = billingSub.tier === p.id && billingSub.status === "active";
+                      const priceNum = billingCycle === "yearly" ? p.priceYearlyPerMonth : p.priceMonthly;
+                      // Pro features aren't built yet — never let anyone pay for them.
+                      const isWaitlist = p.id === "pro" && PRO_IS_WAITLIST;
+                      return (
+                        <Card key={p.id} className={`relative flex flex-col overflow-hidden shadow-soft ${p.popular ? "border-none bg-linear-to-b from-[#2a2545] to-[#1e1b34] text-white shadow-glow" : "border-border bg-white"} ${isCurrent ? "ring-2 ring-primary" : ""}`}>
+                          {p.popular && (
+                            <div className="absolute right-4 top-4">
+                              <Badge className="flex items-center gap-1 border-none bg-primary px-3 py-1 text-[10px] font-bold text-white"><Sparkles className="h-3 w-3" />Most popular</Badge>
                             </div>
-                          ))}
-                        </div>
-                      </CardContent>
-                    </Card>
+                          )}
+                          <CardHeader className="pb-4">
+                            <CardTitle className={`text-xl font-bold ${p.popular ? "text-white" : "text-slate-900"}`}>{p.name}</CardTitle>
+                            <div className="mt-2 flex items-baseline gap-1">
+                              <span className={`text-4xl font-black ${p.popular ? "text-white" : "text-slate-900"}`}>{formatINR(priceNum)}</span>
+                              <span className={`text-sm font-medium ${p.popular ? "text-slate-400" : "text-muted-foreground"}`}>/ mo</span>
+                            </div>
+                            {billingCycle === "yearly" && (
+                              <p className={`mt-1 text-xs font-semibold ${p.popular ? "text-slate-400" : "text-muted-foreground"}`}>{formatINR(p.priceYearlyTotal)} billed yearly</p>
+                            )}
+                            <CardDescription className={`pt-2 leading-relaxed ${p.popular ? "text-slate-400" : "text-slate-500"}`}>{p.tagline}</CardDescription>
+                          </CardHeader>
+                          <CardContent className="pt-0">
+                            <Button
+                              variant={p.popular ? "default" : "outline"}
+                              onClick={() =>
+                                isWaitlist
+                                  ? toast.success("You're on the Pro waitlist — we'll email you the moment it launches.")
+                                  : handleSelectPlan(p.id, billingCycle)
+                              }
+                              disabled={isProcessingBilling || isCurrent}
+                              className={`h-12 w-full rounded-full font-black ${p.popular ? "bg-primary text-white" : "border-slate-200 text-slate-900"}`}
+                            >
+                              {isProcessingBilling
+                                ? <Loader2 className="h-5 w-5 animate-spin" />
+                                : isCurrent
+                                  ? "Current Plan"
+                                  : isWaitlist
+                                    ? "Join waitlist"
+                                    : billingSub.isTrial
+                                      ? `Choose ${p.name}`
+                                      : `Upgrade to ${p.name}`}
+                            </Button>
+                          </CardContent>
+                          <CardContent className="grow">
+                            <div className="space-y-3 pt-4">
+                              {p.highlights.map((f) => {
+                                const comingSoon = isComingSoonHighlight(f);
+                                return (
+                                  <div key={f} className={`flex items-center gap-2 text-sm font-medium ${comingSoon ? "opacity-60" : ""} ${p.popular ? "text-slate-300" : "text-slate-600"}`}>
+                                    <div className={`flex h-5 w-5 items-center justify-center rounded-full ${p.popular ? "bg-white/10" : "bg-primary/5"}`}>
+                                      <CheckCircle2 className="h-3 w-3 shrink-0 text-primary" />
+                                    </div>
+                                    <span>{f}</span>
+                                    {comingSoon && (
+                                      <Badge variant="outline" className={`ml-auto shrink-0 border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${p.popular ? "border-white/20 text-slate-300" : "border-amber-300 bg-amber-50 text-amber-700"}`}>
+                                        Coming soon
+                                      </Badge>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
                   </div>
 
                   {/* Gym Plans CRUD */}

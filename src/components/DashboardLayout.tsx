@@ -2,7 +2,9 @@ import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { hasAccess, FeatureName } from "@/lib/permissions";
+import { usePlanAccess } from "@/lib/usePlanAccess";
+import { type AppFeature } from "@/lib/plans";
+import { UpgradeModal } from "@/components/UpgradeModal";
 import {
   Calendar,
   CreditCard,
@@ -19,13 +21,21 @@ import {
 } from "lucide-react";
 import { supabase } from "@/supabase";
 
-const navItems = [
+type NavItem = {
+  name: string;
+  icon: typeof LayoutDashboard;
+  /** Central app feature this item is gated behind (null = always allowed). */
+  feature: AppFeature | null;
+  to?: string;
+};
+
+const navItems: NavItem[] = [
   { name: "Dashboard", icon: LayoutDashboard, feature: null },
   { name: "Members", icon: Users, feature: null },
   { name: "Attendance", icon: Calendar, feature: null },
-  { name: "Revenue", icon: TrendingUp, feature: "advanced_analytics" },
-  { name: "🏆 Leaderboard", icon: Trophy, feature: null, to: "/city-leaderboard" },
-  { name: "Inventory", icon: Package, feature: "advanced_analytics" },
+  { name: "Revenue", icon: TrendingUp, feature: "revenue_analytics" },
+  { name: "🏆 Leaderboard", icon: Trophy, feature: "leaderboard", to: "/city-leaderboard" },
+  { name: "Inventory", icon: Package, feature: "advanced_reporting" },
   { name: "Plans", icon: CreditCard, feature: null },
   { name: "Kiosk Mode", icon: Monitor, feature: null },
   { name: "Settings", icon: Settings, feature: null },
@@ -39,6 +49,8 @@ type DashboardLayoutProps = {
 export function DashboardLayout({ children, activeTab = "🏆 Leaderboard" }: DashboardLayoutProps) {
   const navigate = useNavigate();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const { hasAccess, requiredTierFor } = usePlanAccess();
+  const [upgrade, setUpgrade] = useState<{ tier: ReturnType<typeof requiredTierFor>; label: string } | null>(null);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -60,13 +72,19 @@ export function DashboardLayout({ children, activeTab = "🏆 Leaderboard" }: Da
   const renderNav = (mobile: boolean) => (
     <nav className={mobile ? "space-y-2" : "grow px-4 space-y-2"}>
       {navItems.map((item) => {
-        const hasFeatureAccess = hasAccess("Pro", item.feature as FeatureName);
+        const hasFeatureAccess = item.feature ? hasAccess(item.feature) : true;
         const isActive = activeTab === item.name;
 
         return (
           <button
             key={item.name}
             onClick={() => {
+              // Locked feature → open the Upgrade modal instead of navigating.
+              if (item.feature && !hasFeatureAccess) {
+                setUpgrade({ tier: requiredTierFor(item.feature), label: item.name.replace(/^🏆\s*/, "") });
+                if (mobile) setIsMobileMenuOpen(false);
+                return;
+              }
               handleNav(item.name, item.to);
               if (mobile) {
                 setIsMobileMenuOpen(false);
@@ -154,6 +172,15 @@ export function DashboardLayout({ children, activeTab = "🏆 Leaderboard" }: Da
 
         {children}
       </main>
+
+      {upgrade && (
+        <UpgradeModal
+          open={!!upgrade}
+          onClose={() => setUpgrade(null)}
+          requiredTier={upgrade.tier}
+          featureLabel={upgrade.label}
+        />
+      )}
     </div>
   );
 }

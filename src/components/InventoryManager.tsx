@@ -53,7 +53,7 @@ import { BackButton } from "./BackButton";
 import { OwnerStoreOrders } from "./OwnerStoreOrders";
 import { supabase } from "@/supabase";
 import { useAuth } from "@/lib/auth-context";
-import { hasAccess } from "@/lib/permissions";
+import { subscriptionHasFeature } from "@/lib/permissions";
 import { Crown, Lock } from 'lucide-react';
 import { useNavigate } from "@tanstack/react-router";
 import { ProtectedProRoute } from "@/components/ProtectedProRoute";
@@ -110,7 +110,8 @@ export function InventoryManager() {
     const fetchSettings = async () => {
       if (user?.id) {
         setOwnerId(user.id);
-        const { data } = await supabase.from('gym_settings').select('id, plan_type').eq('gym_owner_id', user.id).single();
+        // select('*') so missing subscription columns (pre-migration) degrade safely.
+        const { data } = await supabase.from('gym_settings').select('*').eq('gym_owner_id', user.id).single();
         setGymSettings(data);
         setGymId(data?.id ?? null);
       }
@@ -118,7 +119,7 @@ export function InventoryManager() {
     fetchSettings();
   }, [user?.id]);
 
-  const isPro = hasAccess(gymSettings?.plan_type, 'advanced_analytics');
+  const isPro = subscriptionHasFeature(gymSettings, 'advanced_analytics');
 
   const [newProduct, setNewProduct] = useState({
     name: "",

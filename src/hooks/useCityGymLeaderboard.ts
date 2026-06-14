@@ -111,6 +111,17 @@ export function useCityGymLeaderboard(city: string = "ALIGARH") {
         return;
       }
 
+      // Server-side plan gate denied access (below Growth). Honour the boundary —
+      // do NOT fall back to client-side cross-gym aggregation.
+      if (rpcError) {
+        const code = (rpcError as { code?: string }).code;
+        const msg = String((rpcError as { message?: string }).message || "");
+        if (code === "42501" || msg.includes("leaderboard_requires_growth")) {
+          setLeaderboard([]);
+          return;
+        }
+      }
+
       // Fallback (RPC not deployed yet): client-side monthly aggregation.
       const monthStart = new Date();
       monthStart.setDate(1);

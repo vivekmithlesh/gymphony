@@ -54,8 +54,11 @@ import { toast } from "sonner";
 import { QRCodeSVG } from "qrcode.react";
 import { Html5QrcodeScanner } from "html5-qrcode";
 import { supabase, supabaseUrl } from "@/supabase";
-import { initiatePhonePePayment, finalizeUpgrade as finalizePhonePeUpgrade } from "@/lib/phonepe";
+import { startSubscriptionCheckout } from "@/lib/razorpay";
 import { hasAccess, FeatureName, LIMITS } from "@/lib/permissions";
+import { resolveSubscription, subscriptionHasFeature, nextTier, PLANS, formatINR, planAllows, requiredTierFor, type AppFeature, type PlanTier } from "@/lib/plans";
+import { PlanUsageMeter } from "@/components/PlanUsageMeter";
+import { UpgradeModal } from "@/components/UpgradeModal";
 import { isApprovedPayment } from "@/lib/revenue";
 import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
 import { MembersList } from "@/components/MembersList";
@@ -116,7 +119,7 @@ const navItems = [
   { name: "Members", icon: Users, feature: null },
   { name: "Attendance", icon: Calendar, feature: null },
   { name: "Revenue", icon: TrendingUp, feature: 'advanced_analytics' },
-  { name: "🏆 Leaderboard", icon: Trophy, feature: null, to: "/city-leaderboard" },
+  { name: "🏆 Leaderboard", icon: Trophy, feature: null, appFeature: "leaderboard" as AppFeature, to: "/city-leaderboard" },
   { name: "Inventory", icon: Package, feature: 'advanced_analytics' }, // Grouped under analytics for now
   { name: "Plans", icon: CreditCard, feature: null },
   { name: "Kiosk Mode", icon: Monitor, feature: null, to: "/kiosk" },
@@ -170,6 +173,8 @@ function DashboardPage() {
   const { user: authUser } = useAuth();
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  // Locked-feature upgrade prompt (nav click on a feature above the plan).
+  const [upgrade, setUpgrade] = useState<{ tier: PlanTier; label: string } | null>(null);
 
   // Tabs switch via state on the SAME route (not navigation), so the scroll
   // container keeps its position and looks like it "jumped". Reset it to top
@@ -251,6 +256,8 @@ function DashboardPage() {
   const isFetchingStatsRef = useRef(false);
   const dashboardFatalErrorRef = useRef(false);
   const dashboardErrorCountRef = useRef(0);
+  // Ensures we only attempt to auto-provision a missing gym_settings row once.
+  const gymProvisionTriedRef = useRef(false);
 
   const markDashboardFatalError = useCallback((context: string, error: any) => {
     if (dashboardFatalErrorRef.current) {
@@ -375,6 +382,24 @@ function DashboardPage() {
 
       if (!data?.gym_owner_id) {
         console.error("❌ [Gym Settings Fetch] Missing gym_owner_id in response:", data);
+        // Self-heal: provision a gym_settings row + 7-day trial for owners who
+        // don't have one yet (e.g. the signup RPC didn't run). One attempt only.
+        if (!gymProvisionTriedRef.current) {
+          gymProvisionTriedRef.current = true;
+          try {
+            const { error: ensureErr } = await supabase.rpc("ensure_gym_settings", {
+              p_gym_id: null,
+              p_gym_name: null,
+              p_email: null,
+            });
+            if (!ensureErr) {
+              await fetchGymSettings(userId); // refetch the freshly created row
+              return;
+            }
+          } catch (e) {
+            console.warn("ensure_gym_settings (dashboard self-heal) failed:", e);
+          }
+        }
         setGymSettings({} as GymSettings);
         return;
       }
@@ -1058,8 +1083,10 @@ function DashboardPage() {
       return;
     }
 
-    // Check for Pro Plan Limits (100 members)
-    if (!hasAccess(gymSettings?.plan_type, 'unlimited_members') && totalMembersCount >= LIMITS.FREE_MEMBER_LIMIT) {
+    // Enforce the real per-tier member cap (Starter 100 / Growth 500 / Pro ∞),
+    // resolved from the live subscription — no hardcoded limit.
+    const planSub = resolveSubscription(gymSettings);
+    if (Number.isFinite(planSub.memberLimit) && totalMembersCount >= planSub.memberLimit) {
       setIsAddMemberOpen(false);
       setIsLimitReachedModalOpen(true);
       return;
@@ -1434,17 +1461,21 @@ function DashboardPage() {
 
   const handleUpgradePayment = async () => {
     if (!currentUserId) return;
-    
-    await initiatePhonePePayment(
-      1999,
-      currentUserId,
-      async () => {
-        await finalizePhonePeUpgrade(currentUserId);
+    // Upgrade to the next tier via Razorpay. The client never writes the plan —
+    // the verified webhook does (gym_settings plan columns are locked down).
+    const target = nextTier(resolveSubscription(gymSettings).tier) ?? "growth";
+    await startSubscriptionCheckout({
+      tier: target,
+      cycle: "monthly",
+      ownerId: currentUserId,
+      ownerEmail: gymSettings?.owner_email,
+      ownerName: gymSettings?.gym_name,
+      setProcessing: setIsProcessingUpgrade,
+      onActivated: () => {
         setIsLimitReachedModalOpen(false);
         fetchGymSettings(currentUserId);
       },
-      setIsProcessingUpgrade
-    );
+    });
   };
 
   useEffect(() => {
@@ -1768,6 +1799,15 @@ function DashboardPage() {
               </div>
             </section>
 
+            <PlanUsageMeter
+              gymSettings={gymSettings}
+              memberCount={totalMembersCount}
+              onUpgrade={() => {
+                navigate({ to: '/dashboard', search: (prev: any) => ({ ...prev, tab: 'Settings', section: 'Billing & Plans' }) });
+                setActiveTab("Settings");
+              }}
+            />
+
             <AttendanceHeatmap />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -1798,6 +1838,14 @@ function DashboardPage() {
                 Add New Member
               </Button>
             </div>
+            <PlanUsageMeter
+              gymSettings={gymSettings}
+              memberCount={totalMembersCount}
+              onUpgrade={() => {
+                navigate({ to: '/dashboard', search: (prev: any) => ({ ...prev, tab: 'Settings', section: 'Billing & Plans' }) });
+                setActiveTab("Settings");
+              }}
+            />
             <MembersList />
           </motion.div>
         );
@@ -1842,6 +1890,14 @@ function DashboardPage() {
     <DashboardErrorBoundary>
     <div className="relative w-full h-screen bg-slate-50 text-foreground flex flex-col overflow-hidden">
       <AmbientBackground />
+      {upgrade && (
+        <UpgradeModal
+          open={!!upgrade}
+          onClose={() => setUpgrade(null)}
+          requiredTier={upgrade.tier}
+          featureLabel={upgrade.label}
+        />
+      )}
       <AnimatePresence>
         {showRenewalBanner && (
           <motion.div
@@ -1946,19 +2002,26 @@ function DashboardPage() {
                 <Users className="h-10 w-10 text-amber-500" />
               </div>
               
+              {(() => {
+                const sub = resolveSubscription(gymSettings);
+                const up = nextTier(sub.tier);
+                const upPlan = up ? PLANS[up] : null;
+                return (
+                <>
               <div className="space-y-3">
                 <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Limit Reached!</h2>
                 <p className="text-slate-500 font-medium">
-                  You have reached the <span className="text-slate-900 font-bold">100-member limit</span> for the Free plan. Upgrade to Pro for unlimited members and automated features.
+                  You have reached your <span className="text-slate-900 font-bold">{sub.plan.name} plan limit of {Number.isFinite(sub.memberLimit) ? sub.memberLimit.toLocaleString("en-IN") : "unlimited"} members</span>.
+                  {upPlan ? <> Upgrade to <span className="text-slate-900 font-bold">{upPlan.name}</span> for {Number.isFinite(upPlan.memberLimit) ? `up to ${upPlan.memberLimit.toLocaleString("en-IN")}` : "unlimited"} members and more.</> : null}
                 </p>
               </div>
 
                 <div className="space-y-4 pt-2">
-                  <Button 
+                  <Button
                     onClick={() => {
-                      navigate({ 
-                        to: '/dashboard', 
-                        search: (prev: any) => ({ ...prev, tab: 'Settings', section: 'Billing & Plans' }) 
+                      navigate({
+                        to: '/dashboard',
+                        search: (prev: any) => ({ ...prev, tab: 'Settings', section: 'Billing & Plans' })
                       });
                       setIsLimitReachedModalOpen(false);
                       setActiveTab("Settings");
@@ -1966,18 +2029,13 @@ function DashboardPage() {
                     className="w-full h-14 rounded-2xl bg-gradient-brand text-white font-bold text-lg shadow-glow hover:shadow-primary/40 transition-all flex items-center justify-center gap-2"
                   >
                     <Sparkles className="h-5 w-5" />
-                    Upgrade to Pro Now
+                    {upPlan ? `Upgrade to ${upPlan.name} · ${formatINR(upPlan.priceMonthly)}/mo` : "View Plans"}
                   </Button>
                   <div className="flex flex-col gap-3 pt-2">
-                    {[
-                      { text: "Unlimited members", icon: CheckCircle2 },
-                      { text: "Inventory & stock management", icon: CheckCircle2 },
-                      { text: "Kiosk mode for check-ins", icon: CheckCircle2 },
-                      { text: "Auto WhatsApp reminders", icon: CheckCircle2 }
-                    ].map((feat, i) => (
+                    {(upPlan?.highlights ?? []).slice(0, 4).map((feat, i) => (
                       <div key={i} className="flex items-center gap-3 text-sm text-slate-600 font-medium justify-center">
-                        <feat.icon className="h-4 w-4 text-primary shrink-0" />
-                        {feat.text}
+                        <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
+                        {feat}
                       </div>
                     ))}
                   </div>
@@ -1988,6 +2046,9 @@ function DashboardPage() {
                     Maybe Later
                   </button>
                 </div>
+                </>
+                );
+              })()}
             </div>
           </motion.div>
         )}
@@ -2006,12 +2067,20 @@ function DashboardPage() {
         
         <nav className="grow px-4 space-y-2">
           {navItems.map((item) => {
-            const hasFeatureAccess = hasAccess(gymSettings?.plan_type, item.feature as FeatureName);
-            
+            const appFeature = (item as any).appFeature as AppFeature | undefined;
+            const hasFeatureAccess = appFeature
+              ? planAllows(gymSettings, appFeature)
+              : subscriptionHasFeature(gymSettings, item.feature as FeatureName);
+
             return (
               <button
                 key={item.name}
                 onClick={() => {
+                  // Locked feature → open the Upgrade modal instead of navigating.
+                  if (appFeature && !hasFeatureAccess) {
+                    setUpgrade({ tier: requiredTierFor(appFeature), label: item.name.replace(/^🏆\s*/, "") });
+                    return;
+                  }
                   if (item.to) {
                     navigate({ to: item.to as "/city-leaderboard" | "/kiosk" });
                     return;
@@ -2020,8 +2089,8 @@ function DashboardPage() {
                   setActiveTab(item.name);
                 }}
                 className={`flex items-center justify-between px-4 py-3 w-full rounded-xl transition-all ${
-                  activeTab === item.name 
-                    ? "bg-primary/10 text-primary font-medium" 
+                  activeTab === item.name
+                    ? "bg-primary/10 text-primary font-medium"
                     : "text-muted-foreground hover:bg-white/5"
                 }`}
               >
@@ -2074,11 +2143,20 @@ function DashboardPage() {
               </SheetHeader>
               <nav className="space-y-2">
                 {navItems.map((item) => {
-                  const hasFeatureAccess = hasAccess(gymSettings?.plan_type, item.feature as FeatureName);
+                  const appFeature = (item as any).appFeature as AppFeature | undefined;
+                  const hasFeatureAccess = appFeature
+                    ? planAllows(gymSettings, appFeature)
+                    : subscriptionHasFeature(gymSettings, item.feature as FeatureName);
                   return (
                     <button
                       key={item.name}
                       onClick={() => {
+                        // Locked feature → open the Upgrade modal instead of navigating.
+                        if (appFeature && !hasFeatureAccess) {
+                          setUpgrade({ tier: requiredTierFor(appFeature), label: item.name.replace(/^🏆\s*/, "") });
+                          setIsMobileMenuOpen(false);
+                          return;
+                        }
                         if (item.to) {
                           navigate({ to: item.to as "/city-leaderboard" | "/kiosk" });
                           setIsMobileMenuOpen(false);

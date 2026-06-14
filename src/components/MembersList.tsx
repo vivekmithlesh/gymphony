@@ -644,7 +644,7 @@ export function MembersList() {
       {/* Data Table — bounded height so a long member list scrolls inside the
           card instead of stretching the page. Sticky header keeps columns visible. */}
       <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-soft">
-        <div className="max-h-[60vh] overflow-auto">
+        <div className="max-h-[60vh] overflow-auto custom-scrollbar">
           <table className="w-full text-left border-collapse">
             <thead className="sticky top-0 z-10">
               <tr className="border-b border-slate-100 bg-slate-50">

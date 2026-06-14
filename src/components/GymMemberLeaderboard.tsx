@@ -243,7 +243,7 @@ export const GymMemberLeaderboard = ({
           </p>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar">
           {leaderboard.map((entry, index) => (
             <MemberCard key={entry.id} entry={entry} topScore={topScore} index={index} />
           ))}

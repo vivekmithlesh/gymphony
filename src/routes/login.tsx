@@ -49,10 +49,6 @@ const loginSchema = z.object({
 type SignupFormValues = z.infer<typeof signupSchema>;
 type LoginFormValues = z.infer<typeof loginSchema>;
 
-const readRoleValue = (value: unknown): "member" | "owner" | null => {
-  return value === "member" || value === "owner" ? value : null;
-};
-
 const INDIAN_CITIES = [
   "Mumbai", "Delhi", "Bangalore", "Hyderabad", "Ahmedabad", "Chennai", "Kolkata", "Surat", 
   "Pune", "Jaipur", "Lucknow", "Kanpur", "Nagpur", "Indore", "Thane", "Bhopal", 
@@ -171,12 +167,19 @@ function LoginPage() {
         return;
       }
 
-      toast.success("Account created! Setting up your dashboard…");
       signupForm.reset();
-      // onAuthStateChange + <AuthRedirects/> will route to /dashboard; navigate
-      // explicitly for an immediate transition. (String target avoids the
-      // required-search typing on the literal "/dashboard" route.)
-      navigate({ to: getDashboardPathForRole("owner"), replace: true });
+
+      // If email confirmation is ON in Supabase, signUp returns NO session — so
+      // navigating to /dashboard would just bounce back to /login (the "refresh"
+      // loop). Only redirect when we actually have a session; otherwise tell the
+      // owner to confirm their email, then switch them to the Log In tab.
+      if (authData.session) {
+        toast.success("Account created! Setting up your dashboard…");
+        navigate({ to: getDashboardPathForRole("owner"), replace: true });
+      } else {
+        toast.success("Account created! Please check your email to confirm, then log in.");
+        setActiveTab("login");
+      }
     } catch (error: any) {
       toast.error(error?.message || "Signup failed. Please try again.");
     } finally {
@@ -215,7 +218,9 @@ function LoginPage() {
         toast.error(
           msg.includes("invalid login credentials")
             ? "Invalid credentials. Please check your email/mobile and password."
-            : error.message || "Login failed. Please try again."
+            : msg.includes("email not confirmed") || msg.includes("not confirmed")
+              ? "Please confirm your email first — check your inbox for the verification link."
+              : error.message || "Login failed. Please try again."
         );
         return;
       }
@@ -226,18 +231,11 @@ function LoginPage() {
         return;
       }
 
-      // Resolve role for the redirect target (profiles first, then full lookup).
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("id, role")
-        .eq("id", user.id)
-        .maybeSingle();
-
-      const resolvedRole = readRoleValue(profile?.role) ?? (await resolveUserRole(user));
-      if (!resolvedRole) {
-        toast.error("Unable to determine account role. Please contact support.");
-        return;
-      }
+      // resolveUserRole checks profiles/gym_profiles/members AND the auth
+      // metadata role, so it resolves reliably right after signup. Fall back to
+      // "owner" (this is the owner login page) rather than stranding the user
+      // with no redirect.
+      const resolvedRole = (await resolveUserRole(user)) ?? "owner";
 
       toast.success("Logged in successfully!");
       loginForm.reset();
@@ -255,7 +253,8 @@ function LoginPage() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: "http://localhost:8080/dashboard",
+          // Dynamic origin so it works in dev, preview and production.
+          redirectTo: `${window.location.origin}/dashboard`,
         },
       });
 

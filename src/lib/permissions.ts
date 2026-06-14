@@ -1,37 +1,62 @@
-import { supabase } from "@/supabase";
+/**
+ * Backwards-compatible permission helpers layered on top of the centralized
+ * plan config (src/lib/plans.ts — the single source of truth).
+ *
+ * Existing callers pass a plan *string* (legacy 'Free'/'Pro' or a new tier
+ * name). `hasAccess` normalizes that string to a tier and checks the feature
+ * against the central config. For trial/expiry-aware checks, prefer
+ * `subscriptionHasFeature` / `resolveSubscription` from '@/lib/plans'.
+ */
+import {
+  PLANS,
+  normalizeTier,
+  tierHasFeature,
+  type Feature,
+  type PlanTier,
+} from "@/lib/plans";
 
-export type PlanType = 'Free' | 'Pro';
+export type PlanType = PlanTier;
 
+/** Retained for any code importing the old constant. */
 export const PRO_FEATURES = [
-  'unlimited_members',
-  'auto_reminders',
-  'attendance_alerts',
-  'advanced_analytics',
-  'city_discovery',
-  'public_profile',
-  'whatsapp_support'
+  "unlimited_members",
+  "auto_reminders",
+  "attendance_alerts",
+  "advanced_analytics",
+  "city_discovery",
+  "public_profile",
+  "whatsapp_support",
 ] as const;
 
-export type FeatureName = typeof PRO_FEATURES[number];
+export type FeatureName = Feature;
 
 /**
- * Checks if a user has access to a specific feature based on their plan
+ * Does a plan (string or tier) grant access to a feature?
+ * `null` feature = always allowed (baseline capability).
  */
-export const hasAccess = (planType: string | undefined | null, feature: FeatureName | null): boolean => {
+export const hasAccess = (
+  planType: string | undefined | null,
+  feature: FeatureName | null
+): boolean => {
   if (!feature) return true;
-  const normalizedPlan = (planType || 'Free').toLowerCase();
-  
-  // Pro users have access to everything
-  if (normalizedPlan === 'pro') return true;
-  
-  // Free features (negation of PRO_FEATURES)
-  // For clarity, we define what is NOT accessible on Free
-  return !PRO_FEATURES.includes(feature as any);
+  return tierHasFeature(normalizeTier(planType), feature);
 };
 
 /**
- * Common limits for Free plan
+ * Member-record limits, sourced from the central plan config.
+ * FREE_MEMBER_LIMIT is kept for back-compat and equals the Starter cap.
  */
 export const LIMITS = {
-  FREE_MEMBER_LIMIT: 100
+  FREE_MEMBER_LIMIT: PLANS.starter.memberLimit,
+  STARTER_MEMBER_LIMIT: PLANS.starter.memberLimit,
+  GROWTH_MEMBER_LIMIT: PLANS.growth.memberLimit,
+  PRO_MEMBER_LIMIT: PLANS.pro.memberLimit,
 };
+
+export {
+  resolveSubscription,
+  subscriptionHasFeature,
+  memberLimitFor,
+  tierForFeature,
+  nextTier,
+} from "@/lib/plans";

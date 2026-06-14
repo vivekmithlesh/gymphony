@@ -153,7 +153,10 @@ function SignupPage() {
 
     setIsLoading(true);
     try {
-      const ownerGymId = "d9b3f1a0-5b5b-4c4c-8c8c-d9b3f1a0d9b3";
+      // Unique per-tenant gym id (was a hardcoded constant shared by ALL owners
+      // — a cross-tenant data-isolation bug). The real gym_settings row is
+      // provisioned via ensure_gym_settings() below using this same id.
+      let ownerGymId: string = crypto.randomUUID();
 
       if (inviteToken || inviteGymId) {
         const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
@@ -207,7 +210,7 @@ function SignupPage() {
 
             if (insertError) {
               if (String(insertError.message || "").toLowerCase().includes("duplicate") || String(insertError.code || "").includes("23505")) {
-                alert("Aapki profile pehle se bani hai, kripya direct Login karein");
+                toast.error("This account already exists. Please log in instead.");
                 return;
               }
               throw insertError;
@@ -231,17 +234,24 @@ function SignupPage() {
 
           if (insertError) {
             if (String(insertError.message || "").toLowerCase().includes("duplicate") || String(insertError.code || "").includes("23505")) {
-              alert("Aapki profile pehle se bani hai, kripya direct Login karein");
+              toast.error("This account already exists. Please log in instead.");
               return;
             }
             throw insertError;
           }
         }
 
-        toast.success("✅ Account created. Your membership is now active.");
         signupForm.reset();
-        console.log("Member signup success: redirecting to /member-login");
-        window.location.href = "/member-login";
+        // Session-aware: if email confirmation is OFF, signUp returns a session →
+        // go straight to the member dashboard. If ON (no session), send them to
+        // the member login to sign in after confirming — no bounce loop.
+        if (signUpData.session) {
+          toast.success("✅ Account created. Your membership is now active.");
+          navigate({ to: "/member-dashboard", replace: true });
+        } else {
+          toast.success("✅ Account created. Please confirm your email, then log in.");
+          navigate({ to: "/member-login", replace: true });
+        }
         return;
       }
 
@@ -263,23 +273,22 @@ function SignupPage() {
             .maybeSingle();
 
           if (existingProfileError) {
-            console.error("FULL ERROR:", existingProfileError);
-            alert(JSON.stringify(existingProfileError, null, 2));
+            console.error("Rate-limit fallback profile lookup failed:", existingProfileError);
           }
 
           if (existingProfile?.role === "owner") {
-            console.log("Existing owner profile found during rate limit fallback:", existingProfile);
-            toast.success("✅ Account already exists. Redirecting to dashboard.");
-            window.location.href = "/dashboard";
+            toast.success("Account already exists — taking you to your dashboard.");
+            navigate({ to: getDashboardPathForRole("owner"), replace: true });
             return;
           }
 
-          alert("Email rate limit aa gaya hai. Thodi der baad try karo ya login karo.");
+          toast.error("Too many attempts. Please wait a moment and try again, or log in.");
           return;
         }
 
         if (authMessage.includes("already") || authMessage.includes("exists") || authMessage.includes("registered")) {
-          alert("Aap pehle se registered hain, kripya Login karein.");
+          toast.error("You're already registered. Please log in instead.");
+          setActiveTab("login");
           return;
         }
         throw authError;
@@ -287,6 +296,21 @@ function SignupPage() {
 
       if (!authData.user?.id) {
         throw new Error("Failed to create auth user");
+      }
+
+      // Provision this owner's gym_settings row (unique id) + 7-day trial via the
+      // SECURITY DEFINER RPC. Idempotent. If the session isn't ready yet the
+      // dashboard re-runs ensure_gym_settings on load, so signup never blocks.
+      try {
+        const { data: ensuredId, error: ensureErr } = await supabase.rpc("ensure_gym_settings", {
+          p_gym_id: ownerGymId,
+          p_gym_name: data.gymName,
+          p_email: data.email,
+        });
+        if (ensureErr) throw ensureErr;
+        if (ensuredId) ownerGymId = ensuredId as string;
+      } catch (e) {
+        console.warn("ensure_gym_settings failed (dashboard will retry):", e);
       }
 
       const ownerProfilePayload = {
@@ -307,11 +331,11 @@ function SignupPage() {
         .abortSignal(authControllerRef.current.signal);
 
       if (ownerProfileError) {
-        console.error("FULL ERROR:", ownerProfileError);
-        alert(JSON.stringify(ownerProfileError, null, 2));
+        console.error("Owner profile upsert failed:", ownerProfileError);
         const profileMessage = String(ownerProfileError.message || "").toLowerCase();
         if (profileMessage.includes("duplicate") || String(ownerProfileError.code || "").includes("23505")) {
-          alert("Aap pehle se registered hain, kripya Login karein.");
+          toast.error("You're already registered. Please log in instead.");
+          setActiveTab("login");
           return;
         }
         throw ownerProfileError;
@@ -337,23 +361,27 @@ function SignupPage() {
         .abortSignal(authControllerRef.current.signal);
 
       if (profileError) {
-        console.error("FULL ERROR:", profileError);
-        alert(JSON.stringify(profileError, null, 2));
+        console.error("Gym profile upsert failed:", profileError);
         const profileMessage = String(profileError.message || "").toLowerCase();
         if (profileMessage.includes("duplicate") || String(profileError.code || "").includes("23505")) {
-          alert("Aap pehle se registered hain, kripya Login karein.");
+          toast.error("You're already registered. Please log in instead.");
+          setActiveTab("login");
           return;
         }
         throw profileError;
       }
 
-      toast.success("✅ Account created and gym profile setup successfully!");
       signupForm.reset();
-      console.log("Create Gym success: redirecting to /dashboard");
-      window.location.href = "/dashboard";
+      // Session-aware redirect (same as the main auth flow): only go to the
+      // dashboard when a session exists; otherwise prompt to confirm email.
+      if (authData.session) {
+        toast.success("✅ Account created! Setting up your dashboard…");
+        navigate({ to: getDashboardPathForRole("owner"), replace: true });
+      } else {
+        toast.success("✅ Account created! Please check your email to confirm, then log in.");
+        setActiveTab("login");
+      }
     } catch (error: any) {
-      console.error("FULL ERROR:", error);
-      alert(JSON.stringify(error, null, 2));
       if (
         error.name === "AbortError" ||
         error.message?.includes("abort") ||
@@ -362,8 +390,8 @@ function SignupPage() {
         console.warn("Silent fetch error in onSignupSubmit:", error);
         return;
       }
-      console.warn("Signup error:", error);
-      alert(error?.message || "Signup failed.");
+      console.error("Signup error:", error);
+      toast.error(error?.message || "Signup failed. Please try again.");
     } finally {
       setIsLoading(false);
     }
@@ -377,40 +405,30 @@ function SignupPage() {
 
     setIsLoading(true);
     try {
-      console.log('Login Step 1: starting signup-page login flow');
-      try {
-        await supabase.auth.signOut();
-        try { localStorage.clear(); } catch (e) { console.warn('localStorage.clear failed', e); }
-      } catch (signOutError) {
-        console.warn('Session clear failed before login:', signOutError);
-      }
-
       let loginEmail = data.identifier;
 
-      // Check if the input is an international mobile number
+      // Allow logging in with an international mobile number: look up the email.
       const normalizedMobile = normalizeToE164Phone(data.identifier, "");
       if (normalizedMobile) {
-        console.log("Supabase: Mobile number detected, looking up email...");
         const { data: profile, error: profileError } = await supabase
           .from("gym_profiles")
           .select("email")
           .or(`mobile_number.eq.${normalizedMobile},phone.eq.${normalizedMobile}`)
           .abortSignal(authControllerRef.current.signal)
-          .single();
+          .maybeSingle();
 
-        if (profileError || !profile) {
-          // Silent Abort: Ignore AbortError or Lock broken
-          if (
-            profileError?.name === 'AbortError' || 
-            profileError?.message?.includes('abort') || 
-            profileError?.message?.includes('Lock broken')
-          ) {
-            return;
-          }
-          throw new Error("No gym profile found with this mobile number");
+        if (
+          profileError?.name === "AbortError" ||
+          profileError?.message?.includes("abort") ||
+          profileError?.message?.includes("Lock broken")
+        ) {
+          return;
+        }
+        if (profileError || !profile?.email) {
+          toast.error("No account found with this mobile number.");
+          return;
         }
         loginEmail = profile.email;
-        console.log("Supabase: Email found for mobile number:", loginEmail);
       }
 
       const { data: loginData, error } = await supabase.auth.signInWithPassword({
@@ -419,41 +437,40 @@ function SignupPage() {
       });
 
       if (error) {
-        alert(error.message || 'Login failed.');
-        throw error;
+        const msg = String(error.message || "").toLowerCase();
+        toast.error(
+          msg.includes("invalid login credentials")
+            ? "Invalid credentials. Please check your email/mobile and password."
+            : msg.includes("not confirmed")
+              ? "Please confirm your email first — check your inbox for the verification link."
+              : error.message || "Login failed. Please try again."
+        );
+        return;
       }
 
       const user = loginData?.user;
-      console.log('Auth Success:', user?.id);
-      const { data: profile, error: fetchError } = await supabase
-        .from('profiles')
-        .select('id, role')
-        .eq('id', user?.id)
-        .maybeSingle();
-
-      if (fetchError) {
-        console.warn('Role fetch failed:', fetchError);
-        alert(fetchError.message || 'Failed to fetch role. Redirecting anyway.');
-      }
-
-      const role = profile?.role === 'owner' ? 'owner' : 'member';
-      const target = role === 'owner' ? '/owner-dashboard' : '/dashboard';
-      console.log('Role Fetched:', role, 'Redirecting to:', target);
-      toast.success("✅ Logged in successfully!");
-      loginForm.reset();
-      window.location.href = target;
-    } catch (error: any) {
-      // Silent error for aborts
-      if (
-        error.name === 'AbortError' || 
-        error.message?.includes('abort') || 
-        error.message?.includes('Lock broken')
-      ) {
-        console.warn('Silent fetch error in onLoginSubmit:', error);
+      if (!user) {
+        toast.error("Login failed. Please try again.");
         return;
       }
-      console.warn("Login error:", error);
-      alert(error?.message || "Login failed.");
+
+      // Same robust, metadata-aware resolver as the main login. AuthRedirects is
+      // the safety net if the default is ever wrong for this shared join page.
+      const resolvedRole = (await resolveUserRole(user)) ?? "owner";
+      toast.success("✅ Logged in successfully!");
+      loginForm.reset();
+      navigate({ to: getDashboardPathForRole(resolvedRole), replace: true });
+    } catch (error: any) {
+      if (
+        error.name === "AbortError" ||
+        error.message?.includes("abort") ||
+        error.message?.includes("Lock broken")
+      ) {
+        console.warn("Silent fetch error in onLoginSubmit:", error);
+        return;
+      }
+      console.error("Login error:", error);
+      toast.error(error?.message || "Login failed. Please try again.");
     } finally {
       setIsLoading(false);
     }
