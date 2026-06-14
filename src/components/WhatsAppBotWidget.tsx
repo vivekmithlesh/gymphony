@@ -59,7 +59,7 @@ export default function WhatsAppBotWidget() {
   const [isSimulatingInbound, setIsSimulatingInbound] = useState(false);
 
   const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
 
   const getPlanSummary = () => {
     if (gymPlans.length === 0) return 'our current membership plans';
@@ -213,7 +213,14 @@ export default function WhatsAppBotWidget() {
   const activeTurns = activeConversation ? turnsByConversation.get(activeConversation.id) || [] : [];
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Keep the latest message in view by scrolling ONLY this chat panel's own
+    // list — never the page. The previous chatEndRef.scrollIntoView() bubbled up
+    // to the dashboard's <main> scroll container and yanked the whole page down
+    // to the widget on load (and on every new message).
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
   }, [activeTurns.length, activeConversation?.id]);
 
   // ---- actions --------------------------------------------------------------
@@ -457,7 +464,7 @@ export default function WhatsAppBotWidget() {
             </div>
 
             {/* Chat history — sender drives the bubble style */}
-            <div className="flex-1 overflow-y-auto px-4 py-3 custom-scrollbar space-y-3">
+            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-3 custom-scrollbar space-y-3">
               <AnimatePresence initial={false}>
                 {activeTurns.map((turn) => {
                   const isMember = turn.sender === 'member';
@@ -502,7 +509,6 @@ export default function WhatsAppBotWidget() {
                   );
                 })}
               </AnimatePresence>
-              <div ref={chatEndRef} />
             </div>
 
             {/* Owner intervention input */}
