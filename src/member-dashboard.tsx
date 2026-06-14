@@ -703,7 +703,7 @@ export default function MemberDashboard() {
           )}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-80">
+      <DropdownMenuContent align="end" className="w-80 max-h-96 overflow-y-auto custom-scrollbar">
         <DropdownMenuLabel>Notifications</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {notifications.length > 0 ? (
@@ -920,7 +920,7 @@ export default function MemberDashboard() {
                     <MemberJoinScanner onJoined={handleJoinGym} isJoining={isSavingGymId} />
                   </div>
                   {searchResults.length > 0 && (
-                    <div className="mt-4 space-y-2 text-left">
+                    <div className="mt-4 space-y-2 text-left max-h-72 overflow-y-auto custom-scrollbar">
                       {searchResults.map(gym => (
                         <div key={gym.id} className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-white/5 backdrop-blur-xl transition-colors hover:border-primary/30">
                           <div className="flex items-center gap-3">
@@ -1075,7 +1075,7 @@ export default function MemberDashboard() {
                           </div>
 
                           {sessionItems.length > 0 && (
-                            <div className="flex flex-col gap-2">
+                            <div className="flex flex-col gap-2 max-h-64 overflow-y-auto custom-scrollbar">
                               {sessionItems.map((item, i) => (
                                 <div key={i} className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2">
                                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">

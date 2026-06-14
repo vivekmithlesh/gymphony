@@ -208,6 +208,11 @@
   .no-scrollbar::-webkit-scrollbar {
     display: none;
   }
+  /* Firefox: thin scrollbar matching the webkit slate thumb below. */
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: #e2e8f0 transparent;
+  }
   .custom-scrollbar::-webkit-scrollbar {
     width: 4px;
   }
