@@ -3,7 +3,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { motion } from 'framer-motion';
 import { Crown, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { hasAccess } from '@/lib/permissions';
+import { subscriptionHasFeature, type SubscriptionLike } from '@/lib/plans';
 import { supabase } from '@/supabase';
 import { useAuth } from '@/lib/auth-context';
 
@@ -20,25 +20,28 @@ export const ProtectedProRoute: React.FC<ProtectedProRouteProps> = ({
 }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [planType, setPlanType] = useState<string | null>(null);
+  const [sub, setSub] = useState<SubscriptionLike | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const fetchPlan = async () => {
       if (user?.id) {
+        // select('*') so this works whether or not the subscription-plans
+        // migration has been applied yet (missing columns degrade to Starter).
         const { data } = await supabase
           .from('gym_settings')
-          .select('plan_type')
+          .select('*')
           .eq('gym_owner_id', user.id)
           .single();
-        setPlanType(data?.plan_type || 'Free');
+        setSub((data as SubscriptionLike) ?? {});
       }
       setIsLoading(false);
     };
     fetchPlan();
   }, [user?.id]);
 
-  const isPro = hasAccess(planType, 'advanced_analytics');
+  // Trial-aware: a 7-day trial grants Growth access, which includes analytics.
+  const isPro = subscriptionHasFeature(sub, 'advanced_analytics');
 
   if (isLoading) {
     return (

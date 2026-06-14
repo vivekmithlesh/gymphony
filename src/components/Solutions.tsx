@@ -1,24 +1,50 @@
 import { motion } from "framer-motion";
-import { CreditCard, QrCode, LineChart, Check } from "lucide-react";
+import {
+  CreditCard,
+  BrainCircuit,
+  QrCode,
+  MessageCircle,
+  LineChart,
+  MapPin,
+  Check,
+} from "lucide-react";
 
 const features = [
   {
     icon: CreditCard,
-    title: "Smart Payments",
-    desc: "Auto-reminders via WhatsApp & SMS, instant UPI and card collection, with full reconciliation.",
-    bullets: ["Auto fee reminders", "UPI, card, net banking", "Zero manual follow-ups"],
+    title: "Get paid on time, automatically",
+    desc: "Gymphony chases dues and renewals over WhatsApp so you don't have to. Members pay by UPI or card in seconds — and you keep 100% of it.",
+    bullets: ["Auto dues & renewal reminders", "UPI + card collection", "0% platform fee on payments"],
+  },
+  {
+    icon: BrainCircuit,
+    title: "Catch members before they quit",
+    desc: "The AI Retention Engine flags any active member who's stopped showing up — then lets you win them back with one tap before they cancel.",
+    bullets: ["At-risk member alerts", "Live retention rate", "One-tap WhatsApp win-back"],
   },
   {
     icon: QrCode,
-    title: "QR Attendance",
-    desc: "Members scan a single QR at the door. No app downloads, no biometric hassles, no friction.",
-    bullets: ["Works on any phone", "Live check-in feed", "Inactive member alerts"],
+    title: "A front desk that runs itself",
+    desc: "Members check in by scanning one QR — no app, no register, no staff. Geo-fenced wall check-in confirms they're actually in the building.",
+    bullets: ["Scan-to-enter, any phone", "Live 'who's in now' count", "Geo-verified attendance"],
+  },
+  {
+    icon: MessageCircle,
+    title: "Answer every lead in seconds — 24/7",
+    desc: "Your AI WhatsApp receptionist replies to plan, price and timing questions instantly using your gym's real details. Step in any time to take over.",
+    bullets: ["Instant after-hours replies", "Trained on your plans & hours", "Human takeover on demand"],
   },
   {
     icon: LineChart,
-    title: "Live Dashboard",
-    desc: "Track every member, every payment, every visit — in real time, on every device.",
-    bullets: ["Revenue analytics", "Member retention", "Class & trainer insights"],
+    title: "Know your numbers cold",
+    desc: "Revenue, churn, peak hours and plan mix — live, on every device. Export a clean financial report for your accountant in one click.",
+    bullets: ["Revenue & churn analytics", "Peak-hours insights", "One-click Excel reports"],
+  },
+  {
+    icon: MapPin,
+    title: "New members find you first",
+    desc: "Every gym gets a public profile, a city map pin and a leaderboard rank — so nearby members searching for a gym land on you, not a competitor.",
+    bullets: ["Public gym profile page", "City discovery map", "Leaderboard ranking & leads"],
   },
 ];
 
@@ -31,14 +57,14 @@ export function Solutions() {
       <div className="relative mx-auto max-w-7xl px-6">
         <div className="mx-auto max-w-2xl text-center">
           <p className="text-sm font-semibold uppercase tracking-wider text-primary-glow">
-            The Solution
+            One platform. Every revenue leak closed.
           </p>
           <h2 className="mt-3 font-display text-4xl font-bold tracking-tight md:text-5xl">
-            Everything your gym needs.{" "}
+            Everything it takes to run a profitable gym.{" "}
             <span className="text-gradient-brand">In one place.</span>
           </h2>
           <p className="mt-4 text-lg text-surface-foreground/70">
-            Replace 5 tools, 3 spreadsheets, and a notebook with a single beautiful platform.
+            Replace 5 tools, 3 spreadsheets and a notebook with a single platform built to protect — and grow — your revenue.
           </p>
         </div>
 

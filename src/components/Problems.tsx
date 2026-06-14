@@ -1,21 +1,24 @@
 import { motion } from "framer-motion";
-import { PhoneOff, FileX, EyeOff } from "lucide-react";
+import { TrendingDown, UserMinus, EyeOff } from "lucide-react";
 
 const items = [
   {
-    icon: PhoneOff,
-    title: "Manual payment follow-ups",
-    desc: "Endless WhatsApp reminders and awkward fee collection calls draining your time and energy every single week.",
+    icon: TrendingDown,
+    title: "Fees slip through the cracks",
+    desc: "Members forget, dues pile up, and you spend your evenings sending awkward WhatsApp reminders. Every uncollected month is pure profit walking out the door.",
+    loss: "₹15,000–40,000 in unpaid dues every month",
   },
   {
-    icon: FileX,
-    title: "Lost attendance records",
-    desc: "Paper registers and notebook tracking — no clean data on who's active, who's slipping, who's about to leave.",
+    icon: UserMinus,
+    title: "Members quit — and you find out too late",
+    desc: "A member stops showing up for three weeks, then cancels. By the time you notice, they're gone. Replacing them costs 5× more than keeping them.",
+    loss: "20–30% of members churn out every year",
   },
   {
     icon: EyeOff,
-    title: "No online visibility",
-    desc: "New members can't find your gym. Competitors with weaker offerings are showing up first on every search.",
+    title: "New members can't find you",
+    desc: "People searching for a gym in your city land on competitors with louder marketing — not because they're better, but because you're invisible online.",
+    loss: "Dozens of ready-to-join leads lost monthly",
   },
 ];
 
@@ -25,13 +28,13 @@ export function Problems() {
       <div className="mx-auto max-w-7xl px-6">
         <div className="mx-auto max-w-2xl text-center">
           <p className="text-sm font-semibold uppercase tracking-wider text-primary">
-            The Problem
+            The hidden cost of running on memory & notebooks
           </p>
           <h2 className="mt-3 font-display text-4xl font-bold tracking-tight md:text-5xl">
-            Running a gym shouldn't feel like running in place.
+            Your gym is leaking money in three places right now.
           </h2>
           <p className="mt-4 text-lg text-muted-foreground">
-            Owners burn 10+ hours a week on tasks that should be automatic.
+            Most owners don't lose money on big mistakes — they lose it on small leaks that run all year.
           </p>
         </div>
 
@@ -52,6 +55,9 @@ export function Problems() {
                 </div>
                 <h3 className="mt-5 text-xl font-semibold">{item.title}</h3>
                 <p className="mt-3 text-muted-foreground">{item.desc}</p>
+                <p className="mt-5 inline-flex rounded-full bg-destructive/10 px-3 py-1 text-xs font-semibold text-destructive">
+                  {item.loss}
+                </p>
               </div>
             </motion.div>
           ))}

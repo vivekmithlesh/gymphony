@@ -6,20 +6,20 @@ import { Link } from "@tanstack/react-router";
 
 const features = [
   {
-    title: "Beautiful Gym Profile",
-    description: "Showcase your equipment, classes, and atmosphere with a premium landing page.",
+    title: "A profile that sells for you",
+    description: "A premium public page with your photos, classes and reviews — your mini-website that turns searches into walk-ins.",
     icon: UserCircle,
     color: "bg-purple-500/10 text-purple-600",
   },
   {
-    title: "City Discovery Map",
-    description: "Get pinned on the local map where members search for gyms in Aligarh.",
+    title: "Show up where members search",
+    description: "Get pinned on the city map exactly when nearby people are looking for a gym — inquiries land straight in your dashboard.",
     icon: MapPin,
     color: "bg-blue-500/10 text-blue-600",
   },
   {
-    title: "Leaderboard Ranking",
-    description: "Compete for the top spot based on member reviews and engagement.",
+    title: "Outrank your competition",
+    description: "Climb the city leaderboard on reviews, retention and activity — so you're the first name new members see, not the fifth.",
     icon: Trophy,
     color: "bg-amber-500/10 text-amber-600",
   },
@@ -157,13 +157,13 @@ export function DiscoverySection() {
             transition={{ duration: 0.6 }}
           >
             <h2 className="font-display text-4xl font-bold tracking-tight text-foreground md:text-5xl">
-              Get discovered by{" "}
+              Stop paying for ads.{" "}
               <span className="text-gradient-brand bg-gradient-brand">
-                new members
+                Get found for free.
               </span>
             </h2>
             <p className="mt-6 text-lg text-muted-foreground">
-              Don't just run a gym, build a brand. Gymphony puts your business in front of the largest fitness community in your city.
+              Gymphony isn't just software — it's a marketplace. Every gym gets a profile, a map pin and a ranking that puts you in front of fitness seekers in your city, and sends new leads straight to your dashboard.
             </p>
 
             <div className="mt-12 space-y-6">

@@ -17,10 +17,10 @@ export function CTA() {
 
         <div className="relative">
           <h2 className="font-display text-4xl font-bold tracking-tight text-surface-foreground md:text-6xl">
-            Ready to grow your gym?
+            Ready To Run Your Gym Like A Business?
           </h2>
           <p className="mx-auto mt-5 max-w-xl text-lg text-surface-foreground/70">
-            Join 500+ gyms already running on Gymphony. Free for 30 days. No credit card needed.
+            Start your 7-day free trial and see why modern gyms choose Gymphony. No setup fees, no credit card required.
           </p>
 
           <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
@@ -36,7 +36,7 @@ export function CTA() {
               className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/5 px-8 py-4 text-sm font-semibold text-surface-foreground backdrop-blur transition-all hover:bg-white/10"
             >
               <Phone className="h-4 w-4" />
-              Contact Now
+              Book Demo
             </a>
           </div>
         </div>

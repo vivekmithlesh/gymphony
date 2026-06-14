@@ -1,7 +1,13 @@
 import { motion } from "framer-motion";
-import { ArrowRight, PlayCircle, Sparkles } from "lucide-react";
+import { ArrowRight, PlayCircle, Sparkles, ShieldCheck } from "lucide-react";
 import dashboard from "@/assets/dashboard-hero.png";
 import { Link } from "@tanstack/react-router";
+
+const proofStats = [
+  { value: "7 days", label: "free — full access" },
+  { value: "0%", label: "fee on member payments" },
+  { value: "10 min", label: "to set up" },
+];
 
 export function Hero() {
   return (
@@ -19,19 +25,19 @@ export function Hero() {
         >
           <div className="inline-flex items-center gap-2 rounded-full border border-border bg-background/60 px-4 py-1.5 text-xs font-medium backdrop-blur">
             <Sparkles className="h-3.5 w-3.5 text-primary" />
-            <span>The all-in-one OS for modern gyms</span>
+            <span>The all-in-one growth platform for gyms</span>
           </div>
 
           <h1 className="mt-6 font-display text-5xl font-bold leading-[1.05] tracking-tight md:text-6xl lg:text-7xl">
-            Stop chasing fees.{" "}
+            Collect Every Fee.{" "}
             <span className="text-gradient-brand animate-gradient bg-gradient-brand">
-              Start growing
+              Keep Every Member.
             </span>{" "}
-            your gym.
+            Run Your Gym Smarter.
           </h1>
 
           <p className="mt-6 max-w-xl text-lg text-muted-foreground md:text-xl">
-            Automate payments, track attendance, and get discovered by new members—all in one premium platform built for ambitious gym owners.
+            Gymphony helps gym owners automate attendance, track revenue, manage memberships, monitor dues, and run their entire fitness business from one powerful dashboard.
           </p>
 
           <div className="mt-10 flex flex-wrap items-center gap-4">
@@ -39,7 +45,7 @@ export function Hero() {
               to="/signup"
               className="group inline-flex items-center gap-2 rounded-full bg-gradient-brand px-7 py-3.5 text-sm font-semibold text-primary-foreground shadow-elegant transition-all hover:-translate-y-0.5 hover:shadow-glow"
             >
-              Start Free Trial
+              Start 7-Day Free Trial
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
             </Link>
             <a
@@ -47,11 +53,28 @@ export function Hero() {
               className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-7 py-3.5 text-sm font-semibold text-foreground transition-all hover:border-primary hover:bg-accent"
             >
               <PlayCircle className="h-4 w-4 text-primary" />
-              Book a Demo
+              Book Demo
             </a>
           </div>
 
-          <div className="mt-10 flex items-center gap-6 text-sm text-muted-foreground">
+          <p className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+            <ShieldCheck className="h-3.5 w-3.5 text-primary" />
+            No setup fees • No credit card required • Cancel anytime
+          </p>
+
+          {/* Quantified proof band */}
+          <div className="mt-10 grid max-w-lg grid-cols-3 gap-4 border-t border-border pt-6">
+            {proofStats.map((s) => (
+              <div key={s.label}>
+                <p className="font-display text-2xl font-bold tracking-tight text-foreground">
+                  {s.value}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">{s.label}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-8 flex items-center gap-6 text-sm text-muted-foreground">
             <div className="flex -space-x-2">
               {["#7B2CFF", "#C084FC", "#5A0EFF", "#9333EA"].map((c, i) => (
                 <div
@@ -62,7 +85,7 @@ export function Hero() {
               ))}
             </div>
             <p>
-              <span className="font-semibold text-foreground">500+</span> gyms automating with Gymphony
+              <span className="font-semibold text-foreground">500+</span> gyms run on Gymphony
             </p>
           </div>
         </motion.div>
@@ -77,7 +100,7 @@ export function Hero() {
           <div className="relative animate-float rounded-3xl">
             <img
               src={dashboard}
-              alt="Gymphony dashboard preview"
+              alt="Gymphony owner dashboard showing revenue, live check-ins and at-risk members"
               width={1280}
               height={960}
               className="w-full drop-shadow-2xl"

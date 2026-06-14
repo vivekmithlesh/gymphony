@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import screens from "@/assets/app-screens.png";
 
-const labels = ["Dashboard", "Members", "Payments", "Attendance"];
+const labels = ["Live revenue", "At-risk members", "Payments & dues", "QR attendance"];
 
 export function AppPreview() {
   return (
@@ -9,15 +9,15 @@ export function AppPreview() {
       <div className="mx-auto max-w-7xl px-6">
         <div className="mx-auto max-w-2xl text-center">
           <p className="text-sm font-semibold uppercase tracking-wider text-primary">
-            Built for every screen
+            Run the whole business from your phone
           </p>
           <h2 className="mt-3 font-display text-4xl font-bold tracking-tight md:text-5xl">
-            A pocket-sized control room
+            Every number that decides
             <br />
-            for your entire gym.
+            your profit — in your pocket.
           </h2>
           <p className="mt-4 text-lg text-muted-foreground">
-            Designed mobile-first so you can run operations from anywhere — the floor, the café, or the beach.
+            See today's revenue, who's at risk of quitting, and who still owes you — from the floor, the café, or wherever you are. Decisions in seconds, not spreadsheets.
           </p>
         </div>
 

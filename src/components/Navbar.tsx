@@ -4,9 +4,9 @@ import { Logo } from "./Logo";
 import { Link } from "@tanstack/react-router";
 
 const links = [
+  { href: "#why", label: "Why Gymphony" },
   { href: "#features", label: "Features" },
-  { href: "#preview", label: "Product" },
-  { href: "#marketing", label: "Discovery" },
+  { href: "#kiosk", label: "Kiosk" },
   { href: "#pricing", label: "Pricing" },
 ];
 
