@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from '@tanstack/react-router';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
-import { Html5Qrcode } from 'html5-qrcode';
 import {
   QrCode,
   ScanLine,
@@ -15,7 +14,8 @@ import {
 import { toast } from 'sonner';
 import { supabase } from '@/supabase';
 import { useAuth } from '@/lib/auth-context';
-import { evaluatePassPreLookup, evaluateMember } from '@/lib/kioskPass';
+import { QRScanner } from '@/components/qr/QRScanner';
+import { QRService } from '@/lib/qr/QRService';
 
 interface CheckIn {
   id: string;
@@ -59,9 +59,10 @@ export function KioskMode() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [successMember, setSuccessMember] = useState<{ name: string; granted: boolean } | null>(null);
+  // Bumping this remounts <QRScanner/> to retry the camera after an error.
+  const [scannerKey, setScannerKey] = useState(0);
 
   // ── Refs ────────────────────────────────────────────────────────────────────
-  const scannerRef = useRef<Html5Qrcode | null>(null);
   const isProcessingRef = useRef(false); // survives the scanner callback closure
   const ownerIdRef = useRef<string | null>(null);
   const gymIdRef = useRef<string | null>(null);
@@ -70,7 +71,7 @@ export function KioskMode() {
 
   // The wall poster encodes {"gym_id":"<uuid>"} — the exact payload the member's
   // "Scan Gym QR" flow (MemberWallCheckIn) decodes before the geo-fenced RPC.
-  const wallPayload = gymId ? JSON.stringify({ gym_id: gymId }) : '';
+  const wallPayload = gymId ? QRService.buildWallPayload(gymId) : '';
 
   // ── Persist the chosen mode ──────────────────────────────────────────────────
   useEffect(() => {
@@ -151,118 +152,48 @@ export function KioskMode() {
     };
   }, []);
 
-  // ── Scanner lifecycle — only runs in scanner mode ────────────────────────────
+  // Clear any stale camera error when (re)entering scanner mode.
   useEffect(() => {
-    if (mode !== 'scanner') return;
-
-    let cancelled = false;
-    setCameraError(null);
-
-    const timer = setTimeout(async () => {
-      if (scannerRef.current || cancelled) return;
-      try {
-        const html5Qrcode = new Html5Qrcode('reader');
-        scannerRef.current = html5Qrcode;
-        await html5Qrcode.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1.0 },
-          (decodedText) => handleCheckIn(decodedText),
-          () => { /* silent per-frame decode errors */ }
-        );
-      } catch (err) {
-        console.warn('Kiosk camera start failed:', err);
-        scannerRef.current = null;
-        if (!cancelled) {
-          setCameraError(
-            'Could not access a camera. Connect/allow a camera and retry, or switch to Wall QR mode.'
-          );
-        }
-      }
-    }, 400);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      if (scannerRef.current) {
-        // Html5Qrcode must be stopped before its DOM is cleared.
-        scannerRef.current.stop().then(() => scannerRef.current?.clear()).catch(() => {});
-        scannerRef.current = null;
-      }
-    };
-    // handleCheckIn is stable (operates through refs); we intentionally rebind
-    // the scanner only when the mode changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (mode === 'scanner') setCameraError(null);
   }, [mode]);
 
+  // Server-authoritative check-in: the QRScanner hands us the raw decoded text
+  // and the kiosk_check_in RPC verifies the signature, expiry, cross-gym
+  // ownership and dedupe, then records attendance + the audit row. The browser
+  // no longer reads members or writes check_ins/activity_log directly.
   const handleCheckIn = async (decodedText: string) => {
     if (isProcessingRef.current) return;
     isProcessingRef.current = true;
     setIsProcessing(true);
 
-    // Local helper: any clean rejection looks the same to the kiosk operator —
-    // red overlay + deny beep + toast — so we never silently swallow a scan.
-    const reject = (overlayLabel: string, message: string) => {
-      toast.error(message);
-      playBeep(440);
-      showSuccessOverlay(overlayLabel, false);
-    };
-
     try {
-      const kioskGymId = gymIdRef.current;
+      const result = await QRService.kioskCheckIn(decodedText);
 
-      // Pre-DB ruling: unlinked kiosk, non-member QR, or a pass openly bound to
-      // another gym — all settled from the QR + kiosk identity alone.
-      const pre = evaluatePassPreLookup(decodedText, kioskGymId);
-      if (pre.kind === 'reject') {
-        reject(pre.overlayLabel, pre.message);
+      if (!result.success) {
+        toast.error(result.error || 'Check-in failed.');
+        playBeep(440);
+        showSuccessOverlay(result.overlay || 'Invalid pass', false);
         return;
       }
 
-      const { data: member, error: memberError } = await supabase
-        .from('members')
-        .select('id, full_name, status, gym_id, gym_owner_id')
-        .eq('id', pre.memberId)
-        .maybeSingle();
+      const name = result.member_name || 'Member';
+      const granted = result.status !== 'denied';
 
-      // Post-DB ruling: not-found, the cross-gym ownership guard (members has no
-      // gym-scoped RLS, so this is the real guard — keyed on gym_owner_id), and
-      // the access status.
-      const decision = evaluateMember(member ?? null, !!memberError, ownerIdRef.current);
-      if (decision.kind === 'reject') {
-        reject(decision.overlayLabel, decision.message);
+      if (result.already_checked_in) {
+        toast.success(result.message || `${name} is already checked in.`);
+        playBeep(880);
+        showSuccessOverlay(name, true);
         return;
       }
 
-      const { member: checkedInMember, status: accessStatus } = decision;
-
-      const { error: checkInError } = await supabase.from('check_ins').insert([
-        {
-          member_id: checkedInMember.id,
-          gym_id: kioskGymId,
-          status: accessStatus,
-          check_in_time: new Date().toISOString(),
-          created_at: new Date().toISOString(),
-        },
-      ]);
-      if (checkInError) throw checkInError;
-
-      await supabase.from('activity_log').insert([
-        {
-          gym_owner_id: ownerIdRef.current,
-          activity_type: 'member',
-          description: `${checkedInMember.full_name} checked in via Kiosk (${accessStatus}).`,
-          is_read: false,
-        },
-      ]);
-
-      if (accessStatus === 'granted') {
-        toast.success(`Welcome, ${checkedInMember.full_name}! Checked in successfully`);
+      if (granted) {
+        toast.success(`Welcome, ${name}! Checked in successfully`);
         playBeep(880);
       } else {
-        toast.error(`Access Denied — ${checkedInMember.full_name} (${checkedInMember.status})`);
+        toast.error(`Access Denied — ${name}`);
         playBeep(440);
       }
-      showSuccessOverlay(checkedInMember.full_name ?? 'Member', accessStatus === 'granted');
+      showSuccessOverlay(name, granted);
     } catch (error: any) {
       console.warn('Kiosk check-in error:', error);
       toast.error('Check-in failed. Please try again.');
@@ -327,9 +258,7 @@ export function KioskMode() {
 
   const retryScanner = () => {
     setCameraError(null);
-    // Force the scanner effect to re-run by toggling the mode round-trip.
-    setMode('wall');
-    setTimeout(() => setMode('scanner'), 50);
+    setScannerKey((k) => k + 1); // remount <QRScanner/> → fresh camera attempt
   };
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -434,7 +363,12 @@ export function KioskMode() {
             </p>
 
             <div className="relative flex aspect-square w-full max-w-112.5 items-center justify-center overflow-hidden rounded-3xl border-4 border-gray-700 bg-gray-800 shadow-2xl">
-              <div id="reader" className="h-full w-full scale-110 object-cover" />
+              <QRScanner
+                key={scannerKey}
+                onDecode={handleCheckIn}
+                onError={(m) => setCameraError(m)}
+                className="qr-cam h-full w-full scale-110 object-cover"
+              />
               <div className="pointer-events-none absolute inset-0 m-4 rounded-3xl border-4 border-purple-500/30" />
               <div className="animate-[scan_4s_ease-in-out_infinite] pointer-events-none absolute left-0 top-0 h-1 w-full bg-purple-500 shadow-[0_0_15px_#a855f7]" />
 
@@ -585,11 +519,9 @@ export function KioskMode() {
           50% { transform: translateY(430px); }
           100% { transform: translateY(0); }
         }
-        #reader { border: none !important; }
-        #reader video { border-radius: 1.5rem; object-fit: cover; }
-        #reader__dashboard { display: none !important; }
-        #reader__status_span { display: none !important; }
-        #reader__scan_region { background: transparent !important; }
+        .qr-cam { border: none !important; }
+        .qr-cam video { border-radius: 1.5rem; object-fit: cover; height: 100%; width: 100%; }
+        .qr-cam img { display: none !important; }
       `,
         }}
       />

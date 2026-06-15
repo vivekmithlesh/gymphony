@@ -63,7 +63,7 @@ import { isApprovedPayment } from "@/lib/revenue";
 import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
 import { MembersList } from "@/components/MembersList";
 
-import { FeatureLock } from "@/components/FeatureLock";
+import { FeatureGate } from "@/components/FeatureGate";
 import RetentionWidget from "@/components/RetentionWidget";
 import { OwnerPendingPayments } from "@/components/OwnerPendingPayments";
 import { OwnerPendingStorePurchases } from "@/components/OwnerPendingStorePurchases";
@@ -118,9 +118,9 @@ const navItems = [
   { name: "Dashboard", icon: LayoutDashboard, feature: null },
   { name: "Members", icon: Users, feature: null },
   { name: "Attendance", icon: Calendar, feature: null },
-  { name: "Revenue", icon: TrendingUp, feature: 'advanced_analytics' },
+  { name: "Revenue", icon: TrendingUp, feature: null, appFeature: "revenue_analytics" as AppFeature },
   { name: "🏆 Leaderboard", icon: Trophy, feature: null, appFeature: "leaderboard" as AppFeature, to: "/city-leaderboard" },
-  { name: "Inventory", icon: Package, feature: 'advanced_analytics' }, // Grouped under analytics for now
+  { name: "Inventory", icon: Package, feature: null, appFeature: "inventory_management" as AppFeature },
   { name: "Plans", icon: CreditCard, feature: null },
   { name: "Kiosk Mode", icon: Monitor, feature: null, to: "/kiosk" },
   { name: "Settings", icon: Settings, feature: null },
@@ -505,21 +505,34 @@ function DashboardPage() {
 
   const markNotificationsAsRead = async () => {
     if (!currentUserId) return;
-    try {
-      const { error } = await supabase
+    if (unreadCount === 0) return;
+    // Optimistic: flip locally, then persist atomically via the auth-scoped RPC.
+    const prevList = notifications;
+    const prevCount = unreadCount;
+    setUnreadCount(0);
+    setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
+
+    // Prefer the atomic RPC; if it isn't deployed yet (migration 20260624 not
+    // applied) fall back to a direct owner-scoped update so mark-all-read keeps
+    // working against the current schema.
+    let { error } = await supabase.rpc("mark_notifications_read");
+    if (error) {
+      const res = await supabase
         .from("activity_log")
         .update({ is_read: true })
-        .eq("is_read", false)
-        .eq('gym_owner_id', currentUserId);
-
-      if (error) throw error;
-
-      setUnreadCount(0);
-      setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
-      toast.success("All notifications marked as read");
-    } catch (err) {
-      console.warn("Error marking notifications as read:", err);
+        .eq("gym_owner_id", currentUserId)
+        .eq("is_read", false);
+      error = res.error;
     }
+    if (error) {
+      // Roll back so the badge never lies about server state.
+      setNotifications(prevList);
+      setUnreadCount(prevCount);
+      console.warn("Error marking notifications as read:", error);
+      toast.error("Couldn't mark notifications as read. Please try again.");
+      return;
+    }
+    toast.success("All notifications marked as read");
   };
 
   const fetchAvailablePlans = useCallback(async () => {
@@ -1731,9 +1744,10 @@ function DashboardPage() {
                               </div>
                             </div>
                           </div>
-                          <FeatureLock 
-                            planType={gymSettings?.plan_type || 'Free'} 
-                            featureName="Automated WhatsApp Reminders"
+                          <FeatureGate
+                            feature="whatsapp_reminders"
+                            label="Automated WhatsApp Reminders"
+                            subscription={gymSettings}
                           >
                             {(() => {
                               const reminderPhone = member.phone || member.mobile_number || "";
@@ -1757,7 +1771,7 @@ function DashboardPage() {
                             </Button>
                               );
                             })()}
-                          </FeatureLock>
+                          </FeatureGate>
                         </div>
                       ))
                     ) : (
@@ -1811,12 +1825,12 @@ function DashboardPage() {
             <AttendanceHeatmap />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              <FeatureLock planType={gymSettings?.plan_type || 'Free'} featureName="AI Retention Engine">
+              <FeatureGate feature="ai_features" label="AI Retention Engine" subscription={gymSettings}>
                 <RetentionWidget />
-              </FeatureLock>
-              <FeatureLock planType={gymSettings?.plan_type || 'Free'} featureName="WhatsApp AI Bot">
+              </FeatureGate>
+              <FeatureGate feature="ai_features" label="WhatsApp AI Bot" subscription={gymSettings}>
                 <WhatsAppBotWidget />
-              </FeatureLock>
+              </FeatureGate>
             </div>
           </>
         );
@@ -1855,9 +1869,7 @@ function DashboardPage() {
         return <RevenueView />;
       case "Inventory":
         return (
-          <FeatureLock planType={gymSettings?.plan_type || 'Free'} featureName="Advanced Inventory Manager">
-            <InventoryManager />
-          </FeatureLock>
+          <InventoryManager />
         );
       case "Plans":
         return <SettingsView initialCategory="Billing & Plans" />;
@@ -2068,9 +2080,8 @@ function DashboardPage() {
         <nav className="grow px-4 space-y-2">
           {navItems.map((item) => {
             const appFeature = (item as any).appFeature as AppFeature | undefined;
-            const hasFeatureAccess = appFeature
-              ? planAllows(gymSettings, appFeature)
-              : subscriptionHasFeature(gymSettings, item.feature as FeatureName);
+            // Gated items carry an appFeature; everything else is baseline (always allowed).
+            const hasFeatureAccess = appFeature ? planAllows(gymSettings, appFeature) : true;
 
             return (
               <button
@@ -2144,9 +2155,8 @@ function DashboardPage() {
               <nav className="space-y-2">
                 {navItems.map((item) => {
                   const appFeature = (item as any).appFeature as AppFeature | undefined;
-                  const hasFeatureAccess = appFeature
-                    ? planAllows(gymSettings, appFeature)
-                    : subscriptionHasFeature(gymSettings, item.feature as FeatureName);
+                  // Gated items carry an appFeature; everything else is baseline (always allowed).
+                  const hasFeatureAccess = appFeature ? planAllows(gymSettings, appFeature) : true;
                   return (
                     <button
                       key={item.name}

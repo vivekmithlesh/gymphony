@@ -5,6 +5,7 @@ import { QRCodeCanvas } from "qrcode.react";
 import { toast } from "sonner";
 import { supabase } from "@/supabase";
 import { buildMemberPass } from "@/lib/kioskPass";
+import { QRService } from "@/lib/qr/QRService";
 
 interface MemberQRCardProps {
   member: {
@@ -37,13 +38,37 @@ export function MemberQRCard({ member }: MemberQRCardProps) {
     }
   }, [member.full_name]);
 
+  // The pass is now a short-lived, server-SIGNED token (verified by the kiosk
+  // RPC). We render a legacy static pass instantly so the card never blanks and
+  // still works offline / before the migration is applied, then upgrade to the
+  // signed token and keep refreshing it before it expires.
   useEffect(() => {
-    const displayId = member.short_id || formatMemberId(member.id);
-    setQrValue(buildMemberPass(member));
-    setQrReady(!!member.id);
-    if (displayId) {
-      setLocalFullName(member.full_name || "");
+    if (!member.id) {
+      setQrValue("");
+      setQrReady(false);
+      return;
     }
+
+    let cancelled = false;
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+    setQrValue(buildMemberPass(member));
+    setQrReady(true);
+
+    const mint = async () => {
+      const pass = await QRService.mintMemberPass();
+      if (cancelled || !pass) return; // keep the legacy fallback on failure
+      setQrValue(pass.token);
+      setQrReady(true);
+      const ms = Math.max(30_000, pass.ttl * 1000 - 60_000); // refresh ~1 min early
+      refreshTimer = setTimeout(mint, ms);
+    };
+    mint();
+
+    return () => {
+      cancelled = true;
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
   }, [member.id, member.gym_id, member.short_id]);
 
   // While the full-screen pass is open: lock body scroll and let Esc dismiss it.

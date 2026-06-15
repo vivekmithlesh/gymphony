@@ -15,7 +15,8 @@ export function Footer() {
               The all-in-one gym management platform built to help ambitious owners automate operations and grow membership.
             </p>
             <div className="mt-6 space-y-2 text-sm">
-              <p className="font-semibold">Founder · Vivek Kumar</p>
+              <p className="font-semibold">Founder · Abhishek Kumar</p>
+              <p className="font-semibold">Co-Founder · Vivek Kumar</p>
               <a
                 href="tel:7906240659"
                 className="flex items-center gap-2 text-muted-foreground transition-colors hover:text-primary"

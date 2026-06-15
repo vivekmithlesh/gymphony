@@ -23,7 +23,22 @@
       "PowerShell(npx eslint --rule '{\\\\\"prettier/prettier\\\\\":\\\\\"off\\\\\",\\\\\"@typescript-eslint/no-explicit-any\\\\\":\\\\\"off\\\\\"}' src/lib/debounce.ts src/routes/dashboard.tsx src/components/RevenueView.tsx src/components/AttendanceHeatmap.tsx src/components/MembersList.tsx 2>&1 | Select-Object -Last 40)",
       "PowerShell(npm test *)",
       "PowerShell(npx eslint --rule '{\\\\\"prettier/prettier\\\\\":\\\\\"off\\\\\",\\\\\"@typescript-eslint/no-explicit-any\\\\\":\\\\\"off\\\\\"}' src/lib/auth-context.tsx src/components/ProtectedRoute.tsx src/routes/__root.tsx src/routes/login.tsx src/routes/member-login.tsx src/routes/signup.tsx 2>&1 | Select-Object -Last 40)",
-      "PowerShell(npx eslint --rule '{\\\\\"prettier/prettier\\\\\":\\\\\"off\\\\\",\\\\\"@typescript-eslint/no-explicit-any\\\\\":\\\\\"off\\\\\",\\\\\"react-hooks/exhaustive-deps\\\\\":\\\\\"off\\\\\"}' src/components/AttendanceView.tsx src/components/KioskMode.tsx src/components/RetentionWidget.tsx src/components/WhatsAppBotWidget.tsx src/components/InventoryManager.tsx src/components/FeatureLock.tsx src/components/ProFeatureGuard.tsx src/components/ProfileSettings.tsx src/components/CityLeaderboard.tsx src/components/SettingsView.tsx src/components/AttendanceHeatmap.tsx src/components/MembersList.tsx src/components/RevenueView.tsx src/components/ProtectedProRoute.tsx src/routes/dashboard.tsx src/routes/gym-detail.`$gymId.tsx src/member-dashboard.tsx 2>&1 | Select-Object -Last 40)"
+      "PowerShell(npx eslint --rule '{\\\\\"prettier/prettier\\\\\":\\\\\"off\\\\\",\\\\\"@typescript-eslint/no-explicit-any\\\\\":\\\\\"off\\\\\",\\\\\"react-hooks/exhaustive-deps\\\\\":\\\\\"off\\\\\"}' src/components/AttendanceView.tsx src/components/KioskMode.tsx src/components/RetentionWidget.tsx src/components/WhatsAppBotWidget.tsx src/components/InventoryManager.tsx src/components/FeatureLock.tsx src/components/ProFeatureGuard.tsx src/components/ProfileSettings.tsx src/components/CityLeaderboard.tsx src/components/SettingsView.tsx src/components/AttendanceHeatmap.tsx src/components/MembersList.tsx src/components/RevenueView.tsx src/components/ProtectedProRoute.tsx src/routes/dashboard.tsx src/routes/gym-detail.`$gymId.tsx src/member-dashboard.tsx 2>&1 | Select-Object -Last 40)",
+      "Bash(xargs grep -l \"from.*routes\")",
+      "Bash(node -e \"console.log\\(Object.keys\\(require\\('./package.json'\\).scripts\\).join\\(', '\\)\\)\")",
+      "Bash(npx tsc *)",
+      "Bash(xargs head -100)",
+      "Bash(sed 's/.*from public\\\\.//')",
+      "Bash(sed 's/.*join public\\\\.//')",
+      "Bash(sed 's/on public\\\\.//')",
+      "Bash(sed \"s/.*on public\\\\.//\")",
+      "Bash(xargs grep -l \"approve_payment\\\\|supabase\\\\.rpc\\\\|supabase\\\\.from\")",
+      "Bash(grep *)",
+      "Bash(npm run *)",
+      "Bash(npx eslint *)",
+      "Bash(npx prettier *)",
+      "Bash(git -C /c/Users/hp/gymphony-gym-growth-platform status --short)",
+      "Bash(git -C /c/Users/hp/gymphony-gym-growth-platform diff --stat)"
     ]
   }
 }

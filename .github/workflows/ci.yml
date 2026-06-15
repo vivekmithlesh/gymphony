@@ -1,0 +1,41 @@
+name: CI
+
+# Validates pull requests and pushes to the main branches. Deployment is
+# handled separately by Vercel (building `main`); this workflow is purely a
+# correctness gate so regressions in entitlements / QR / payments / auth are
+# caught before merge.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # --- Hard gates: these must pass to merge ---
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # --- Informational: the repo carries pre-existing Prettier debt, so lint
+      #     is reported but does not block. Remove continue-on-error once the
+      #     backlog is formatted (npm run format). ---
+      - name: Lint (non-blocking)
+        run: npm run lint
+        continue-on-error: true

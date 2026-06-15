@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { Smartphone, CheckCircle2, Loader2, AlertCircle, ExternalLink } from "lucide-react";
+import { Smartphone, CheckCircle2, Loader2, AlertCircle, ExternalLink, Paperclip } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/supabase";
 import { Button } from "@/components/ui/button";
@@ -54,6 +54,39 @@ export function MemberUpiCheckout({
   onSubmitted,
 }: MemberUpiCheckoutProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Manual-UPI proof: the member enters the UTR / reference shown in their UPI
+  // app, and may optionally attach a screenshot. The UTR is required and the DB
+  // enforces it can never be submitted twice.
+  const [utr, setUtr] = useState("");
+  const [evidenceUrl, setEvidenceUrl] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  // Clear proof when the dialog is closed so it never leaks into the next plan.
+  useEffect(() => {
+    if (!open) {
+      setUtr("");
+      setEvidenceUrl(null);
+    }
+  }, [open]);
+
+  const handleEvidence = async (file: File) => {
+    setIsUploading(true);
+    try {
+      const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+      const path = `${memberId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const { error } = await supabase.storage
+        .from("payment-evidence")
+        .upload(path, file, { upsert: false, contentType: file.type || "image/jpeg" });
+      if (error) throw error;
+      const { data } = supabase.storage.from("payment-evidence").getPublicUrl(path);
+      setEvidenceUrl(data.publicUrl);
+      toast.success("Proof attached.");
+    } catch (err: any) {
+      toast.error(`Could not upload proof: ${err.message || "please try again."}`);
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   // upi://pay?pa={upi}&pn={gym}&am={amount}&cu=INR — the standard UPI deep link
   // every Indian UPI app (GPay, PhonePe, Paytm…) understands. The VPA (`pa`) is
@@ -67,6 +100,11 @@ export function MemberUpiCheckout({
 
   const handlePaid = async () => {
     if (!plan) return;
+    const ref = utr.trim();
+    if (ref.length < 4) {
+      toast.error("Enter the UPI reference / UTR number shown in your payment app.");
+      return;
+    }
     setIsSubmitting(true);
     try {
       const { error } = await supabase.from("payments").insert([{
@@ -78,10 +116,21 @@ export function MemberUpiCheckout({
         status: "pending_verification",
         payment_method: "UPI",
         payment_date: new Date().toISOString(),
+        utr: ref,
+        evidence_url: evidenceUrl,
       }]);
-      if (error) throw error;
+      if (error) {
+        // 23505 = the UTR unique index — this reference was already submitted.
+        if ((error as { code?: string }).code === "23505") {
+          toast.error("This UPI reference (UTR) has already been submitted.");
+          return;
+        }
+        throw error;
+      }
 
       toast.success("Payment submitted! The gym will confirm it shortly.");
+      setUtr("");
+      setEvidenceUrl(null);
       onSubmitted?.();
       onClose();
     } catch (err: any) {
@@ -132,9 +181,40 @@ export function MemberUpiCheckout({
               <ExternalLink className="h-4 w-4" /> Open in a UPI app
             </a>
 
+            <div className="w-full space-y-2 pt-1">
+              <label className="text-xs font-semibold text-slate-700">
+                UPI reference / UTR number <span className="text-red-500">*</span>
+              </label>
+              <input
+                value={utr}
+                onChange={(e) => setUtr(e.target.value)}
+                inputMode="numeric"
+                placeholder="e.g. 412345678901"
+                className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm font-medium text-slate-900 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-100"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Find this in your UPI app's payment receipt. It lets the gym verify your payment.
+              </p>
+
+              <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-violet-600 hover:text-violet-700">
+                <Paperclip className="h-4 w-4" />
+                {isUploading ? "Uploading…" : evidenceUrl ? "Screenshot attached ✓" : "Attach payment screenshot (optional)"}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  disabled={isUploading}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleEvidence(f);
+                  }}
+                />
+              </label>
+            </div>
+
             <Button
               onClick={handlePaid}
-              disabled={isSubmitting}
+              disabled={isSubmitting || isUploading || utr.trim().length < 4}
               className="mt-2 h-12 w-full rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 font-bold text-white hover:from-violet-500 hover:to-fuchsia-500"
             >
               {isSubmitting ? (

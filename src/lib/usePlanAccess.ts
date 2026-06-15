@@ -27,12 +27,21 @@ export interface PlanAccess {
  * guards, the shared DashboardLayout nav). Components that already have
  * gym_settings can call `planAllows(gymSettings, feature)` directly instead.
  */
-export function usePlanAccess(): PlanAccess {
+export function usePlanAccess(opts?: { enabled?: boolean }): PlanAccess {
+  // When a caller already holds a gym_settings row (e.g. the dashboard), it can
+  // pass enabled:false to skip the redundant fetch and resolve access from that
+  // row directly — avoids N duplicate gym_settings queries when several gated
+  // tiles render on one screen.
+  const enabled = opts?.enabled ?? true;
   const { user } = useAuth();
   const [sub, setSub] = useState<SubscriptionLike | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(enabled);
 
   useEffect(() => {
+    if (!enabled) {
+      setIsLoading(false);
+      return;
+    }
     let cancelled = false;
     const run = async () => {
       if (!user?.id) {
@@ -55,7 +64,7 @@ export function usePlanAccess(): PlanAccess {
     return () => {
       cancelled = true;
     };
-  }, [user?.id]);
+  }, [user?.id, enabled]);
 
   const subscription = resolveSubscription(sub);
 

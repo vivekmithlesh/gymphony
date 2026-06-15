@@ -195,15 +195,30 @@ export default function MemberDashboard() {
 
   const markNotificationsAsRead = async () => {
     if (!member?.id) return;
-    try {
-      await supabase
+    if (unreadNotifications === 0) return;
+    // Optimistic: flip locally, then persist atomically via the auth-scoped RPC.
+    const prevList = notifications;
+    const prevUnread = unreadNotifications;
+    setNotifications((list) => list.map((n) => ({ ...n, is_read: true })));
+    setUnreadNotifications(0);
+
+    // Prefer the atomic RPC; if it isn't deployed yet (migration 20260624 not
+    // applied) fall back to a direct member-scoped update.
+    let { error } = await supabase.rpc("mark_notifications_read");
+    if (error) {
+      const res = await supabase
         .from("activity_log")
         .update({ is_read: true })
         .eq("member_id", member.id)
         .eq("is_read", false);
-      setUnreadNotifications(0);
-    } catch (err) {
-      console.error("Mark as read error:", err);
+      error = res.error;
+    }
+    if (error) {
+      // Roll back so the badge never lies about server state.
+      setNotifications(prevList);
+      setUnreadNotifications(prevUnread);
+      console.error("Mark as read error:", error);
+      toast.error("Couldn't mark notifications as read. Please try again.");
     }
   };
 

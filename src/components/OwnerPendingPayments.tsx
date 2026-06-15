@@ -14,6 +14,8 @@ interface PendingPayment {
   payment_method?: string | null;
   payment_date?: string | null;
   created_at?: string | null;
+  utr?: string | null;
+  evidence_url?: string | null;
   member_name?: string;
 }
 
@@ -45,7 +47,7 @@ export function OwnerPendingPayments({ ownerId, alertsEnabled = true }: OwnerPen
     try {
       const { data, error } = await supabase
         .from("payments")
-        .select("id, member_id, amount, plan_name, payment_method, payment_date, created_at")
+        .select("id, member_id, amount, plan_name, payment_method, payment_date, created_at, utr, evidence_url")
         .eq("gym_owner_id", ownerId)
         .eq("status", "pending_verification")
         .order("created_at", { ascending: false });
@@ -163,6 +165,21 @@ export function OwnerPendingPayments({ ownerId, alertsEnabled = true }: OwnerPen
                     {p.payment_method || "UPI"} · {p.plan_name || "Membership"} ·{" "}
                     <span className="font-bold text-slate-700">₹{Number(p.amount).toLocaleString("en-IN")}</span>
                   </p>
+                  {(p.utr || p.evidence_url) && (
+                    <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-slate-500">
+                      {p.utr && <span>UTR: <span className="font-mono font-semibold text-slate-700">{p.utr}</span></span>}
+                      {p.evidence_url && (
+                        <a
+                          href={p.evidence_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-semibold text-violet-600 hover:text-violet-700"
+                        >
+                          View proof
+                        </a>
+                      )}
+                    </p>
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <Button

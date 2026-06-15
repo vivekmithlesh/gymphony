@@ -636,9 +636,10 @@ export function InventoryManager() {
     });
 
   return (
-    <ProtectedProRoute 
-      featureName="Advanced Inventory" 
-      description="Upgrade to Pro to manage gym stock, track supplements sales, and monitor low inventory levels in real-time."
+    <ProtectedProRoute
+      feature="inventory_management"
+      featureName="Inventory Manager"
+      description="The gym store & inventory manager is a Growth feature. Upgrade to manage stock, track supplement sales, and monitor low inventory in real-time."
     >
       <motion.div 
         initial={{ opacity: 0, y: 10 }}

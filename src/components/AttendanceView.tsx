@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { BackButton } from "./BackButton";
 import { supabase } from "@/supabase";
 import { useAuth } from "@/lib/auth-context";
+import { QrScanAnalytics } from "./QrScanAnalytics";
 
 interface Member {
   id: string;
@@ -619,6 +620,8 @@ export function AttendanceView() {
           </AnimatePresence>
         </div>
       </div>
+
+      <QrScanAnalytics />
     </div>
   );
 }

@@ -324,6 +324,8 @@ export type AppFeature =
   | "attendance_insights"
   | "leaderboard"
   | "advanced_reporting"
+  | "inventory_management"
+  | "whatsapp_reminders"
   // pro (rank 3)
   | "multi_staff"
   | "advanced_analytics"
@@ -344,6 +346,8 @@ export const FEATURE_MIN_TIER: Record<AppFeature, PlanTier> = {
   attendance_insights: "growth",
   leaderboard: "growth",
   advanced_reporting: "growth",
+  inventory_management: "growth",
+  whatsapp_reminders: "growth",
 
   multi_staff: "pro",
   advanced_analytics: "pro",

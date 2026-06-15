@@ -41,6 +41,7 @@ import { isApprovedPayment } from "@/lib/revenue";
 import { debounce } from "@/lib/debounce";
 import { useAuth } from "@/lib/auth-context";
 import { ProtectedProRoute } from "./ProtectedProRoute";
+import { PaymentLedger } from "./PaymentLedger";
 import { Lock, Crown } from "lucide-react";
 
 export function RevenueView() {
@@ -628,9 +629,10 @@ export function RevenueView() {
   }
 
   return (
-    <ProtectedProRoute 
-      featureName="Advanced Analytics" 
-      description="Upgrade to Pro to unlock deep insights, monthly growth trends, and detailed membership distribution."
+    <ProtectedProRoute
+      feature="revenue_analytics"
+      featureName="Revenue Analytics"
+      description="Revenue analytics is a Growth feature. Upgrade to unlock deep insights, monthly growth trends, and detailed membership distribution."
     >
       <div className="space-y-8 pb-10">
         <div className="mb-2">
@@ -889,6 +891,8 @@ export function RevenueView() {
             )}
           </CardContent>
         </Card>
+
+        <PaymentLedger />
       </div>
     </ProtectedProRoute>
   );

@@ -35,7 +35,7 @@ const navItems: NavItem[] = [
   { name: "Attendance", icon: Calendar, feature: null },
   { name: "Revenue", icon: TrendingUp, feature: "revenue_analytics" },
   { name: "🏆 Leaderboard", icon: Trophy, feature: "leaderboard", to: "/city-leaderboard" },
-  { name: "Inventory", icon: Package, feature: "advanced_reporting" },
+  { name: "Inventory", icon: Package, feature: "inventory_management" },
   { name: "Plans", icon: CreditCard, feature: null },
   { name: "Kiosk Mode", icon: Monitor, feature: null },
   { name: "Settings", icon: Settings, feature: null },
