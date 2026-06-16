@@ -4,6 +4,8 @@ import { env } from "@/config";
 import { cacheKeys, redisCache } from "@/server/cache";
 import { prisma } from "@/server/db";
 import { createOrder, verifyPaymentSignature } from "@/server/payments/razorpay";
+import { emitNotification, NOTIFICATION_TYPES } from "@/server/services/notification.service";
+import { sendWelcomeSms } from "@/server/services/join.service";
 import type { PaymentVerifyInput, RazorpayOrderResult } from "@/types/gym.types";
 
 const PAYMENT_ORDER_META_TTL_SECONDS = 24 * 60 * 60;
@@ -218,7 +220,7 @@ export async function verifyPayment(
   const today = startOfDay(new Date());
   const expiryDate = getMembershipEndDate(today, plan.billingPeriod);
 
-  await prisma.$transaction(async (tx) => {
+  const enrollment = await prisma.$transaction(async (tx) => {
     await tx.paymentRecord.update({
       where: {
         id: paymentRecord.id,
@@ -295,12 +297,53 @@ export async function verifyPayment(
         membershipId: membership.id,
       },
     });
+
+    return { isNewMembership: !existingMembership };
   });
 
   await Promise.all([
     redisCache.del(cacheKeys.dashboard(gymId)),
     redisCache.del(getPaymentOrderMetaKey(input.razorpayOrderId)),
   ]);
+
+  const [member, gym] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: memberUserId },
+      select: { fullName: true, phone: true },
+    }),
+    prisma.gym.findUnique({
+      where: { id: gymId },
+      select: { name: true },
+    }),
+  ]);
+  const memberName = member?.fullName ?? "A member";
+
+  await emitNotification({
+    gymId,
+    text: `Payment received from ${memberName} for ${plan.name}`,
+    type: NOTIFICATION_TYPES.PAYMENT,
+    color: "text-emerald-400",
+  });
+
+  if (enrollment.isNewMembership) {
+    await emitNotification({
+      gymId,
+      text: `${memberName} joined on the ${plan.name} plan`,
+      type: NOTIFICATION_TYPES.MEMBER,
+      color: "text-emerald-400",
+    });
+
+    if (member?.phone) {
+      await sendWelcomeSms(member.phone, memberName, gym?.name ?? "your gym", plan.name);
+    }
+  } else {
+    await emitNotification({
+      gymId,
+      text: `${memberName} renewed the ${plan.name} plan`,
+      type: NOTIFICATION_TYPES.RENEWAL,
+      color: "text-violet-400",
+    });
+  }
 
   return {
     success: true,

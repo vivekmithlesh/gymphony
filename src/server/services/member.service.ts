@@ -2,6 +2,7 @@ import { MembershipBillingPeriod, MembershipStatus, UserRole } from "@prisma/cli
 import { addDays, addMonths, addYears, format, parseISO } from "date-fns";
 import { cacheKeys, redisCache } from "@/server/cache";
 import { prisma } from "@/server/db";
+import { emitNotification, NOTIFICATION_TYPES } from "@/server/services/notification.service";
 import type {
   CreateMemberInput,
   MemberListResponse,
@@ -219,6 +220,13 @@ export async function createMember(gymId: string, input: CreateMemberInput): Pro
   });
 
   await invalidateMemberCaches(gymId, membership.id);
+
+  await emitNotification({
+    gymId,
+    text: `${membership.memberUser.fullName} was added on the ${membership.planName} plan`,
+    type: NOTIFICATION_TYPES.MEMBER,
+    color: "text-emerald-400",
+  });
 
   return toMemberRow(membership);
 }

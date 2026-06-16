@@ -14,6 +14,7 @@ import { Route as SignupRouteImport } from './routes/signup'
 import { Route as MemberLoginRouteImport } from './routes/member-login'
 import { Route as MemberDashboardRouteImport } from './routes/member-dashboard'
 import { Route as KioskRouteImport } from './routes/kiosk'
+import { Route as JoinRouteImport } from './routes/join'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as IndexRouteImport } from './routes/index'
 
@@ -42,6 +43,11 @@ const KioskRoute = KioskRouteImport.update({
   path: '/kiosk',
   getParentRoute: () => rootRouteImport,
 } as any)
+const JoinRoute = JoinRouteImport.update({
+  id: '/join',
+  path: '/join',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
@@ -56,6 +62,7 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/join': typeof JoinRoute
   '/kiosk': typeof KioskRoute
   '/member-dashboard': typeof MemberDashboardRoute
   '/member-login': typeof MemberLoginRoute
@@ -65,6 +72,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/join': typeof JoinRoute
   '/kiosk': typeof KioskRoute
   '/member-dashboard': typeof MemberDashboardRoute
   '/member-login': typeof MemberLoginRoute
@@ -75,6 +83,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/join': typeof JoinRoute
   '/kiosk': typeof KioskRoute
   '/member-dashboard': typeof MemberDashboardRoute
   '/member-login': typeof MemberLoginRoute
@@ -86,6 +95,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/dashboard'
+    | '/join'
     | '/kiosk'
     | '/member-dashboard'
     | '/member-login'
@@ -95,6 +105,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/dashboard'
+    | '/join'
     | '/kiosk'
     | '/member-dashboard'
     | '/member-login'
@@ -104,6 +115,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/dashboard'
+    | '/join'
     | '/kiosk'
     | '/member-dashboard'
     | '/member-login'
@@ -114,6 +126,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRoute: typeof DashboardRoute
+  JoinRoute: typeof JoinRoute
   KioskRoute: typeof KioskRoute
   MemberDashboardRoute: typeof MemberDashboardRoute
   MemberLoginRoute: typeof MemberLoginRoute
@@ -158,6 +171,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KioskRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/join': {
+      id: '/join'
+      path: '/join'
+      fullPath: '/join'
+      preLoaderRoute: typeof JoinRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/dashboard': {
       id: '/dashboard'
       path: '/dashboard'
@@ -178,6 +198,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
+  JoinRoute: JoinRoute,
   KioskRoute: KioskRoute,
   MemberDashboardRoute: MemberDashboardRoute,
   MemberLoginRoute: MemberLoginRoute,

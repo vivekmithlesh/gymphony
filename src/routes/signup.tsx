@@ -8,12 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ownerSignupStart } from "@/server/api/auth/owner-signup-start";
-import { getRedirectForRole, getSessionFromCookie } from "@/lib/auth-helpers";
+import { getRedirectForRole } from "@/lib/session-redirect";
+import { currentSession } from "@/server/api/auth/current-session";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/signup")({
   beforeLoad: async () => {
-    const session = await getSessionFromCookie();
+    const session = await currentSession();
 
     if (session) {
       throw redirect({ to: getRedirectForRole(session.role) });

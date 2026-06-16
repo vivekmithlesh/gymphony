@@ -18,6 +18,7 @@ import { attendanceList } from "@/server/api/attendance/list";
 import type { AttendanceListResponse } from "@/types/gym.types";
 import { toast } from "sonner";
 import { BackButton } from "./BackButton";
+import { AttendanceAnalyticsPanel } from "./AttendanceAnalyticsPanel";
 
 export function AttendanceView() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -132,6 +133,8 @@ export function AttendanceView() {
           </Button>
         </div>
       </div>
+
+      <AttendanceAnalyticsPanel />
 
       <div className="grid gap-8 lg:grid-cols-12">
         <div className="lg:col-span-4 space-y-6">

@@ -4,6 +4,7 @@
 export const OTP_PURPOSES = {
   OWNER_SIGNUP: "OWNER_SIGNUP",
   MEMBER_LOGIN: "MEMBER_LOGIN",
+  MEMBER_SIGNUP: "MEMBER_SIGNUP",
 } as const;
 
 /** OTP expiration window in minutes. */

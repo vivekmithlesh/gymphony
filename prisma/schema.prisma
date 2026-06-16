@@ -50,6 +50,7 @@ enum PaymentStatus {
 enum OtpPurpose {
   OWNER_SIGNUP
   MEMBER_LOGIN
+  MEMBER_SIGNUP
 }
 
 model User {
@@ -184,17 +185,19 @@ model InventoryProduct {
 }
 
 model Notification {
-  id        Int      @id @default(autoincrement())
-  gymId     String   @map("gym_id") @db.Uuid
+  id        Int       @id @default(autoincrement())
+  gymId     String    @map("gym_id") @db.Uuid
   text      String
-  timeLabel String   @map("time_label")
+  timeLabel String    @map("time_label")
   type      String
   color     String
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  gym       Gym      @relation(fields: [gymId], references: [id], onDelete: Cascade)
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  gym       Gym       @relation(fields: [gymId], references: [id], onDelete: Cascade)
 
   @@index([gymId])
+  @@index([gymId, readAt])
   @@index([createdAt])
   @@map("notifications")
 }
@@ -276,15 +279,17 @@ model AuthOtp {
 }
 
 model GymSetting {
-  gymId               String   @id @map("gym_id") @db.Uuid
-  automaticReminders  Boolean  @default(true) @map("automatic_reminders")
-  dailySummaryEmail   Boolean  @default(false) @map("daily_summary_email")
-  ownerEmail          String   @map("owner_email")
-  contactNumber       String   @map("contact_number")
-  logoUrl             String?  @map("logo_url")
-  createdAt           DateTime @default(now()) @map("created_at")
-  updatedAt           DateTime @updatedAt @map("updated_at")
-  gym                 Gym      @relation(fields: [gymId], references: [id], onDelete: Cascade)
+  gymId                     String   @id @map("gym_id") @db.Uuid
+  automaticReminders        Boolean  @default(true) @map("automatic_reminders")
+  dailySummaryEmail         Boolean  @default(false) @map("daily_summary_email")
+  ownerEmail                String   @map("owner_email")
+  contactNumber             String   @map("contact_number")
+  logoUrl                   String?  @map("logo_url")
+  attendanceCooldownMinutes Int      @default(360) @map("attendance_cooldown_minutes")
+  lateCheckInHour           Int      @default(22) @map("late_check_in_hour")
+  createdAt                 DateTime @default(now()) @map("created_at")
+  updatedAt                 DateTime @updatedAt @map("updated_at")
+  gym                       Gym      @relation(fields: [gymId], references: [id], onDelete: Cascade)
 
   @@map("gym_settings")
 }

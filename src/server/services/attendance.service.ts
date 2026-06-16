@@ -1,6 +1,10 @@
-import { endOfMonth, startOfDay, startOfMonth } from "date-fns";
+import { endOfMonth, startOfDay, startOfMonth, subMinutes } from "date-fns";
 import { prisma } from "@/server/db";
+import { emitNotification, NOTIFICATION_TYPES } from "@/server/services/notification.service";
 import type { AttendanceListResponse } from "@/types/gym.types";
+
+/** Visit counts that trigger a milestone celebration notification. */
+const ATTENDANCE_MILESTONES = new Set([10, 25, 50, 100, 250, 500]);
 
 function buildAvatar(fullName: string): string {
   return fullName
@@ -98,19 +102,30 @@ export async function recordCheckIn(
   gymId: string,
   memberUserId: string,
 ): Promise<{ success: boolean; message: string }> {
-  const dayStart = startOfDay(new Date());
-  const memberMembership = await prisma.membership.findFirst({
-    where: {
-      gymId,
-      memberUserId,
-      memberUser: {
-        isActive: true,
+  const now = new Date();
+  const [memberMembership, gymSetting] = await Promise.all([
+    prisma.membership.findFirst({
+      where: {
+        gymId,
+        memberUserId,
+        memberUser: {
+          isActive: true,
+        },
       },
-    },
-    select: {
-      memberUserId: true,
-    },
-  });
+      select: {
+        memberUserId: true,
+        memberUser: {
+          select: {
+            fullName: true,
+          },
+        },
+      },
+    }),
+    prisma.gymSetting.findUnique({
+      where: { gymId },
+      select: { attendanceCooldownMinutes: true },
+    }),
+  ]);
 
   if (!memberMembership) {
     return {
@@ -119,12 +134,17 @@ export async function recordCheckIn(
     };
   }
 
+  // Configurable cooldown: blocks duplicate check-ins within the window.
+  // 0 falls back to once-per-calendar-day.
+  const cooldownMinutes = gymSetting?.attendanceCooldownMinutes ?? 360;
+  const cooldownStart = cooldownMinutes > 0 ? subMinutes(now, cooldownMinutes) : startOfDay(now);
+
   const existingCheckIn = await prisma.attendanceSession.findFirst({
     where: {
       gymId,
       memberUserId,
       checkInAt: {
-        gte: dayStart,
+        gte: cooldownStart,
       },
     },
     select: {
@@ -135,7 +155,10 @@ export async function recordCheckIn(
   if (existingCheckIn) {
     return {
       success: false,
-      message: "Member is already checked in for today",
+      message:
+        cooldownMinutes > 0
+          ? `Already checked in. Please wait before checking in again.`
+          : "Member is already checked in for today",
     };
   }
 
@@ -143,12 +166,33 @@ export async function recordCheckIn(
     data: {
       gymId,
       memberUserId,
-      checkInAt: new Date(),
+      checkInAt: now,
     },
     select: {
       id: true,
     },
   });
+
+  await emitNotification({
+    gymId,
+    text: `${memberMembership.memberUser.fullName} checked in`,
+    type: NOTIFICATION_TYPES.ATTENDANCE,
+    color: "text-sky-400",
+  });
+
+  // Attendance milestone celebration (10 / 25 / 50 / 100 ... lifetime visits).
+  const totalVisits = await prisma.attendanceSession.count({
+    where: { gymId, memberUserId },
+  });
+
+  if (ATTENDANCE_MILESTONES.has(totalVisits)) {
+    await emitNotification({
+      gymId,
+      text: `🎉 ${memberMembership.memberUser.fullName} reached ${totalVisits} check-ins!`,
+      type: NOTIFICATION_TYPES.MEMBER,
+      color: "text-amber-400",
+    });
+  }
 
   return {
     success: true,

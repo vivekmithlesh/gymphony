@@ -10,11 +10,12 @@ import { toast } from "sonner";
 import { Navbar } from "@/components/Navbar";
 import { memberSendOtp } from "@/server/api/auth/member-send-otp";
 import { memberVerifyOtp } from "@/server/api/auth/member-verify-otp";
-import { getRedirectForRole, getSessionFromCookie } from "@/lib/auth-helpers";
+import { getRedirectForRole } from "@/lib/session-redirect";
+import { currentSession } from "@/server/api/auth/current-session";
 
 export const Route = createFileRoute("/member-login")({
   beforeLoad: async () => {
-    const session = await getSessionFromCookie();
+    const session = await currentSession();
 
     if (session) {
       throw redirect({ to: getRedirectForRole(session.role) });

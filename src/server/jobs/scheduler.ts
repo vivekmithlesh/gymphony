@@ -51,7 +51,7 @@ function getIstDayWindow(
 
 async function queueExpiryReminders(): Promise<void> {
   const today = new Date();
-  const reminderWindows = [3, 1].map((daysUntilExpiry) => ({
+  const reminderWindows = [7, 3, 1].map((daysUntilExpiry) => ({
     daysUntilExpiry,
     ...getIstDayWindow(today, daysUntilExpiry),
   }));

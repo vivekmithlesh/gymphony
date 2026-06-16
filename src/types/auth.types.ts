@@ -18,6 +18,12 @@ export interface OwnerSignupMetadata {
   phone: string;
 }
 
+export interface MemberSignupMetadata {
+  fullName: string;
+  phone: string;
+  gymId: string;
+}
+
 export interface SessionPayload {
   userId: string;
   gymId: string;
@@ -31,6 +37,8 @@ export interface AuthResult {
   message: string;
   sessionToken?: string;
   redirectTo?: string;
+  /** True when the member already had a membership at the target gym. */
+  alreadyMember?: boolean;
 }
 
 export interface OtpSendResult {

@@ -4,8 +4,24 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 
 import appCss from "../styles.css?url";
+import { OfflineBanner } from "@/components/OfflineBanner";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Automatic retry with backoff so transient network blips self-heal.
+      retry: 2,
+      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 30000),
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+      // Queue reads/writes while offline and run them once back online.
+      networkMode: "offlineFirst",
+    },
+    mutations: {
+      networkMode: "offlineFirst",
+    },
+  },
+});
 
 function NotFoundComponent() {
   return (
@@ -139,10 +155,11 @@ function RootShell({ children }: { children: React.ReactNode }) {
 function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
+      <OfflineBanner />
       <GlobalErrorBoundary>
         <Outlet />
       </GlobalErrorBoundary>
-      <Toaster position="bottom-center" richColors />
+      <Toaster position="bottom-center" richColors closeButton />
     </QueryClientProvider>
   );
 }

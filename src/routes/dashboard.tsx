@@ -49,13 +49,18 @@ import { InventoryManager } from "@/components/InventoryManager";
 import { RevenueView } from "@/components/RevenueView";
 import { SettingsView } from "@/components/SettingsView";
 import { AttendanceView } from "@/components/AttendanceView";
+import { OwnerInsights } from "@/components/OwnerInsights";
 import { Menu } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { dashboardSummary } from "@/server/api/dashboard/summary";
 import { logoutApi } from "@/server/api/auth/logout";
 import { createMemberApi } from "@/server/api/members/create";
 import { memberPlans } from "@/server/api/members/plans";
-import { getRedirectForRole, getSessionFromCookie } from "@/lib/auth-helpers";
+import { joinInviteLink } from "@/server/api/join/invite-link";
+import { notificationsUnreadCount } from "@/server/api/notifications/unread-count";
+import { notificationsMarkRead } from "@/server/api/notifications/mark-read";
+import { getRedirectForRole } from "@/lib/session-redirect";
+import { currentSession } from "@/server/api/auth/current-session";
 import type {
   DashboardMetric,
   DashboardSummary,
@@ -65,7 +70,7 @@ import type {
 
 export const Route = createFileRoute("/dashboard")({
   beforeLoad: async () => {
-    const session = await getSessionFromCookie();
+    const session = await currentSession();
 
     if (!session) {
       throw redirect({ to: "/signup" });
@@ -91,6 +96,12 @@ const metricIcons = [Users, TrendingUp, Users, AlertCircle] as const;
 const notificationIcons = {
   payment: TrendingUp,
   revenue: TrendingUp,
+  member: UserPlus,
+  attendance: Calendar,
+  renewal: TrendingUp,
+  expired: AlertCircle,
+  staff: Users,
+  lead: Sparkles,
   system: Settings,
   overdue: AlertCircle,
   alert: AlertCircle,
@@ -150,6 +161,42 @@ function DashboardPageContent() {
     queryFn: () => memberPlans(),
   });
 
+  const inviteLinkQuery = useQuery({
+    queryKey: ["join-invite-link"],
+    queryFn: () => joinInviteLink(),
+  });
+
+  const unreadCountQuery = useQuery({
+    queryKey: ["notifications-unread-count"],
+    queryFn: () => notificationsUnreadCount(),
+    refetchInterval: 30000,
+  });
+
+  const unreadCount = unreadCountQuery.data?.count ?? 0;
+
+  const inviteUrl =
+    inviteLinkQuery.data && typeof window !== "undefined"
+      ? `${window.location.origin}${inviteLinkQuery.data.joinPath}`
+      : "";
+
+  const qrImageUrl = inviteUrl
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=10&data=${encodeURIComponent(inviteUrl)}`
+    : "";
+
+  const openNotifications = async () => {
+    const next = !isNotificationsOpen;
+    setIsNotificationsOpen(next);
+
+    if (next && unreadCount > 0) {
+      try {
+        await notificationsMarkRead({ data: {} });
+        await queryClient.invalidateQueries({ queryKey: ["notifications-unread-count"] });
+      } catch {
+        // Non-critical: badge will reconcile on next poll.
+      }
+    }
+  };
+
   const createMemberMutation = useMutation({
     mutationFn: createMemberApi,
     onSuccess: async () => {
@@ -180,11 +227,21 @@ function DashboardPageContent() {
     });
   };
 
-  const handleCopyLink = () => {
-    toast.success("✅ Link copied to clipboard!", {
-      position: "bottom-center",
-      className: "bg-white text-primary border-primary/20",
-    });
+  const handleCopyLink = async () => {
+    if (!inviteUrl) {
+      toast.error("Invite link is still loading. Please try again.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      toast.success("✅ Invite link copied to clipboard!", {
+        position: "bottom-center",
+        className: "bg-white text-primary border-primary/20",
+      });
+    } catch {
+      toast.error("Couldn't copy automatically. Link: " + inviteUrl);
+    }
   };
 
   const summaryQuery = useQuery<DashboardSummary>({
@@ -211,15 +268,17 @@ function DashboardPageContent() {
       };
     },
   );
-  const activityLog = (summaryQuery.data?.notifications ?? []).map((notification: NotificationItem) => ({
-    id: notification.id,
-    text: notification.text,
-    time: notification.time,
-    icon:
-      notificationIcons[notification.type as keyof typeof notificationIcons] ??
-      notificationIcons.default,
-    color: notification.color,
-  }));
+  const activityLog = (summaryQuery.data?.notifications ?? []).map(
+    (notification: NotificationItem) => ({
+      id: notification.id,
+      text: notification.text,
+      time: notification.time,
+      icon:
+        notificationIcons[notification.type as keyof typeof notificationIcons] ??
+        notificationIcons.default,
+      color: notification.color,
+    }),
+  );
 
   const navItems = [
     { name: "Dashboard", icon: LayoutDashboard },
@@ -272,64 +331,198 @@ function DashboardPageContent() {
       </aside>
 
       <main className="flex-grow relative overflow-y-auto px-6 py-8 md:px-10 lg:py-12">
-        {/* Mobile Header (Only on small screens) */}
-        <div className="lg:hidden flex items-center justify-between mb-8">
+        {/* Mobile Header (Only on small screens) — actions stay reachable on every tab */}
+        <div
+          className="lg:hidden flex items-center justify-between mb-8 gap-2"
+          style={{ paddingTop: "env(safe-area-inset-top)" }}
+        >
           <Link to="/" className="flex items-center gap-2 group">
             <div className="h-8 w-8 rounded-lg bg-gradient-brand flex items-center justify-center transition-transform group-active:scale-95">
               <span className="font-bold text-white text-xs">G</span>
             </div>
             <span className="font-display text-lg font-bold tracking-tight">Gymphony</span>
           </Link>
-          <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
-            <SheetTrigger asChild>
+
+          <div className="flex items-center gap-2">
+            {/* Notifications (mobile) */}
+            <div className="relative">
               <Button
                 variant="outline"
                 size="icon"
-                className="rounded-xl border-white/10 bg-white/5"
+                className="rounded-full bg-white/5 border-white/10 hover:bg-white/10 relative h-11 w-11"
+                onClick={openNotifications}
+                aria-label="Notifications"
               >
-                <Menu className="h-5 w-5" />
+                <Bell className="h-5 w-5" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-primary text-[10px] font-bold text-white flex items-center justify-center">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
               </Button>
-            </SheetTrigger>
-            <SheetContent side="left" className="bg-slate-950 border-white/10 text-white w-72">
-              <SheetHeader className="text-left px-2 mb-8">
-                <SheetTitle className="text-white flex items-center gap-2">
-                  <div className="h-8 w-8 rounded-lg bg-gradient-brand flex items-center justify-center">
-                    <span className="font-bold text-white text-xs">G</span>
-                  </div>
-                  Gymphony
-                </SheetTitle>
-              </SheetHeader>
-              <nav className="space-y-2">
-                {navItems.map((item) => (
-                  <button
-                    key={item.name}
-                    onClick={() => {
-                      setActiveTab(item.name);
-                      setIsMobileMenuOpen(false);
-                    }}
-                    className={`flex items-center gap-3 px-4 py-3 w-full rounded-xl transition-all ${
-                      activeTab === item.name
-                        ? "bg-primary/10 text-primary font-medium"
-                        : "text-muted-foreground hover:bg-white/5"
-                    }`}
-                  >
-                    <item.icon className="h-5 w-5" />
-                    {item.name}
-                  </button>
-                ))}
-              </nav>
+              <AnimatePresence>
+                {isNotificationsOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setIsNotificationsOpen(false)}
+                    />
+                    <motion.div
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      className="absolute right-0 mt-2 w-[min(20rem,calc(100vw-2rem))] z-20 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/95 backdrop-blur-2xl shadow-2xl"
+                    >
+                      <div className="p-4 border-b border-white/10 flex items-center justify-between">
+                        <h4 className="font-bold text-sm">Notifications</h4>
+                        <Badge className="bg-primary/20 text-primary border-none text-[10px] h-5">
+                          {notifications.length}
+                        </Badge>
+                      </div>
+                      <div className="max-h-80 overflow-y-auto">
+                        {notifications.length === 0 ? (
+                          <p className="p-6 text-center text-xs text-muted-foreground">
+                            No notifications yet
+                          </p>
+                        ) : (
+                          notifications.map((n) => (
+                            <div
+                              key={n.id}
+                              className="p-4 border-b border-white/5 last:border-none flex gap-3"
+                            >
+                              <div
+                                className={`h-8 w-8 rounded-full bg-white/5 flex items-center justify-center shrink-0 ${n.color}`}
+                              >
+                                <n.icon className="h-4 w-4" />
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium text-white/90 leading-tight">
+                                  {n.text}
+                                </p>
+                                <p className="text-[10px] text-muted-foreground mt-1">{n.time}</p>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
 
-              <div className="absolute bottom-8 left-6 right-6">
-                <button
-                  onClick={handleLogout}
-                  className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-red-400 hover:bg-red-400/10 transition-colors"
+            {/* Profile / Avatar menu (mobile) */}
+            <div className="relative">
+              <button
+                onClick={() => setIsProfileOpen(!isProfileOpen)}
+                className="h-11 w-11 rounded-full bg-gradient-brand p-0.5 active:scale-95 transition-transform"
+                aria-label="Account menu"
+              >
+                <div className="h-full w-full rounded-full bg-background flex items-center justify-center font-bold text-sm">
+                  OC
+                </div>
+              </button>
+              <AnimatePresence>
+                {isProfileOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setIsProfileOpen(false)} />
+                    <motion.div
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      className="absolute right-0 mt-2 w-56 z-20 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/95 backdrop-blur-2xl shadow-2xl p-2"
+                    >
+                      <button
+                        onClick={() => {
+                          setActiveTab("Settings");
+                          setIsProfileOpen(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-white/90 hover:bg-white/5 text-left"
+                      >
+                        <Building2 className="h-4 w-4 text-primary" /> My Gym Profile
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActiveTab("Settings");
+                          setIsProfileOpen(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-white/90 hover:bg-white/5 text-left"
+                      >
+                        <Settings className="h-4 w-4 text-primary" /> Account Settings
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActiveTab("Revenue");
+                          setIsProfileOpen(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-white/90 hover:bg-white/5 text-left"
+                      >
+                        <TrendingUp className="h-4 w-4 text-primary" /> Billing &amp; Revenue
+                      </button>
+                      <div className="h-px bg-white/10 my-1 mx-2" />
+                      <button
+                        onClick={handleLogout}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-bold text-red-400 hover:bg-red-400/10 text-left"
+                      >
+                        <LogOut className="h-4 w-4" /> Log Out
+                      </button>
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
+
+            <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
+              <SheetTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="rounded-xl border-white/10 bg-white/5"
                 >
-                  <LogOut className="h-5 w-5" />
-                  <span className="font-medium">Logout</span>
-                </button>
-              </div>
-            </SheetContent>
-          </Sheet>
+                  <Menu className="h-5 w-5" />
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="left" className="bg-slate-950 border-white/10 text-white w-72">
+                <SheetHeader className="text-left px-2 mb-8">
+                  <SheetTitle className="text-white flex items-center gap-2">
+                    <div className="h-8 w-8 rounded-lg bg-gradient-brand flex items-center justify-center">
+                      <span className="font-bold text-white text-xs">G</span>
+                    </div>
+                    Gymphony
+                  </SheetTitle>
+                </SheetHeader>
+                <nav className="space-y-2">
+                  {navItems.map((item) => (
+                    <button
+                      key={item.name}
+                      onClick={() => {
+                        setActiveTab(item.name);
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 w-full rounded-xl transition-all ${
+                        activeTab === item.name
+                          ? "bg-primary/10 text-primary font-medium"
+                          : "text-muted-foreground hover:bg-white/5"
+                      }`}
+                    >
+                      <item.icon className="h-5 w-5" />
+                      {item.name}
+                    </button>
+                  ))}
+                </nav>
+
+                <div className="absolute bottom-8 left-6 right-6">
+                  <button
+                    onClick={handleLogout}
+                    className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-red-400 hover:bg-red-400/10 transition-colors"
+                  >
+                    <LogOut className="h-5 w-5" />
+                    <span className="font-medium">Logout</span>
+                  </button>
+                </div>
+              </SheetContent>
+            </Sheet>
+          </div>
         </div>
 
         {/* Background Gradients */}
@@ -365,10 +558,14 @@ function DashboardPageContent() {
                       variant="outline"
                       size="icon"
                       className="rounded-full bg-white/5 border-white/10 hover:bg-white/10 relative"
-                      onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
+                      onClick={openNotifications}
                     >
                       <Bell className="h-5 w-5" />
-                      <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-primary animate-pulse" />
+                      {unreadCount > 0 && (
+                        <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-primary text-[10px] font-bold text-white flex items-center justify-center">
+                          {unreadCount > 9 ? "9+" : unreadCount}
+                        </span>
+                      )}
                     </Button>
 
                     <AnimatePresence>
@@ -541,6 +738,9 @@ function DashboardPageContent() {
                 ))}
               </section>
 
+              {/* Owner Insights — business intelligence widgets */}
+              <OwnerInsights />
+
               {/* Action Needed Section */}
               <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 <div className="lg:col-span-2 space-y-6">
@@ -612,7 +812,9 @@ function DashboardPageContent() {
                   <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl overflow-hidden shadow-2xl p-6">
                     <div className="space-y-6">
                       {activityLog.length === 0 ? (
-                        <p className="text-sm text-slate-400 text-center py-4">No recent activity</p>
+                        <p className="text-sm text-slate-400 text-center py-4">
+                          No recent activity
+                        </p>
                       ) : (
                         activityLog.map((activity, i) => (
                           <motion.div
@@ -860,17 +1062,24 @@ function DashboardPageContent() {
                       exit={{ opacity: 0, x: -10 }}
                       className="space-y-6 text-center"
                     >
-                      <div className="relative mx-auto w-48 h-48 bg-slate-50 rounded-3xl border-2 border-slate-100 flex items-center justify-center p-4">
-                        <QrCode className="w-full h-full text-slate-900" />
-                        <div className="absolute inset-0 flex items-center justify-center opacity-5">
-                          <Sparkles className="w-24 h-24 text-primary" />
-                        </div>
+                      <div className="relative mx-auto w-48 h-48 bg-white rounded-3xl border-2 border-slate-100 flex items-center justify-center p-3 overflow-hidden">
+                        {qrImageUrl ? (
+                          <img
+                            src={qrImageUrl}
+                            alt="Join gym QR code"
+                            className="w-full h-full object-contain"
+                          />
+                        ) : (
+                          <QrCode className="w-24 h-24 text-slate-300 animate-pulse" />
+                        )}
                       </div>
 
                       <div className="space-y-2">
-                        <h4 className="font-bold text-slate-900">Scan to join Royal Fitness</h4>
+                        <h4 className="font-bold text-slate-900">
+                          Scan to join {inviteLinkQuery.data?.gymName ?? "your gym"}
+                        </h4>
                         <p className="text-sm text-slate-500">
-                          New members can scan this to register instantly
+                          New members can scan this to sign up &amp; pay instantly
                         </p>
                       </div>
 

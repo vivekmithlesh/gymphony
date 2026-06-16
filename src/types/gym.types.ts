@@ -130,6 +130,88 @@ export interface PaymentVerifyInput {
   membershipId: string;
 }
 
+export interface InsightTrendPoint {
+  label: string;
+  value: number;
+}
+
+export interface PeakHourPoint {
+  label: string;
+  value: number;
+}
+
+export interface ActiveMemberSummary {
+  id: string;
+  name: string;
+  avatar: string;
+  visits: number;
+}
+
+export interface AttendanceAnalytics {
+  daily: {
+    checkInsToday: number;
+    uniqueMembersToday: number;
+    lateToday: number;
+    deltaVsYesterday: number;
+  };
+  monthly: {
+    checkInsThisMonth: number;
+    activeDays: number;
+    avgPerActiveDay: number;
+    lateThisMonth: number;
+  };
+  peakHours: PeakHourPoint[];
+  mostActiveMembers: ActiveMemberSummary[];
+  cooldownMinutes: number;
+  lateCheckInHour: number;
+}
+
+export interface OwnerInsightCards {
+  todayCheckIns: number;
+  activeMembers: number;
+  revenueThisMonth: string;
+  newMembersThisMonth: number;
+  renewalsDue: number;
+  expiringMemberships: number;
+  pendingPayments: number;
+  memberGrowthPercent: string;
+  memberGrowthTrend: "up" | "down";
+}
+
+export interface OwnerInsights {
+  cards: OwnerInsightCards;
+  attendanceTrend: InsightTrendPoint[];
+  membershipGrowth: InsightTrendPoint[];
+  revenueTrend: InsightTrendPoint[];
+  planDistribution: PlanDistribution[];
+}
+
+export interface PublicPlan {
+  id: string;
+  name: string;
+  displayPrice: string;
+  pricePaise: number;
+  billingPeriod: "TRIAL" | "MONTHLY" | "ANNUAL";
+  isFree: boolean;
+  benefits: string[];
+}
+
+export interface PublicGymInfo {
+  id: string;
+  name: string;
+  city: string;
+  location: string | null;
+  logoUrl: string | null;
+  isAcceptingMembers: boolean;
+  plans: PublicPlan[];
+}
+
+export interface JoinInviteLink {
+  gymId: string;
+  gymName: string;
+  joinPath: string;
+}
+
 export interface MemberPortalOverview {
   gymName: string;
   location: string;

@@ -1,4 +1,4 @@
-import { createFileRoute, Link, redirect } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -15,7 +15,10 @@ import {
   ShoppingBag,
   Trophy,
   Share2,
+  LogOut,
+  Settings,
 } from "lucide-react";
+import { logoutApi } from "@/server/api/auth/logout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { BackButton } from "@/components/BackButton";
@@ -23,7 +26,8 @@ import { memberPortalHistory } from "@/server/api/member-portal/history";
 import { memberPortalLeaderboard } from "@/server/api/member-portal/leaderboard";
 import { memberPortalOverview } from "@/server/api/member-portal/overview";
 import { memberPortalStore } from "@/server/api/member-portal/store";
-import { getRedirectForRole, getSessionFromCookie } from "@/lib/auth-helpers";
+import { getRedirectForRole } from "@/lib/session-redirect";
+import { currentSession } from "@/server/api/auth/current-session";
 import type {
   LeaderboardMember,
   MemberPortalOverview,
@@ -34,7 +38,7 @@ import { toast } from "sonner";
 
 export const Route = createFileRoute("/member-dashboard")({
   beforeLoad: async () => {
-    const session = await getSessionFromCookie();
+    const session = await currentSession();
 
     if (!session) {
       throw redirect({ to: "/member-login" });
@@ -57,7 +61,18 @@ export const Route = createFileRoute("/member-dashboard")({
 });
 
 function MemberDashboard() {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<"pass" | "history" | "store" | "leaderboard">("pass");
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+
+  const handleLogout = async () => {
+    toast.info("Logging out...");
+    try {
+      await logoutApi();
+    } finally {
+      navigate({ to: "/member-login" });
+    }
+  };
   const overviewQuery = useQuery<MemberPortalOverview>({
     queryKey: ["member-portal-overview"],
     queryFn: () => memberPortalOverview(),
@@ -105,9 +120,61 @@ function MemberDashboard() {
                   : "Aligarh's Fittest"}
           </h1>
         </Link>
-        <div className="bg-primary/10 text-primary border border-primary/20 px-4 py-1.5 rounded-full text-xs font-bold flex items-center gap-2 backdrop-blur-md">
-          <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-          {overviewQuery.data?.status ?? "Loading"}
+        <div className="flex items-center gap-2">
+          <div className="bg-primary/10 text-primary border border-primary/20 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-2 backdrop-blur-md">
+            <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+            {overviewQuery.data?.status ?? "Loading"}
+          </div>
+
+          <div className="relative">
+            <button
+              onClick={() => setIsProfileOpen((open) => !open)}
+              className="h-9 w-9 rounded-full bg-gradient-brand p-0.5 active:scale-95 transition-transform"
+              aria-label="Account menu"
+            >
+              <div className="h-full w-full rounded-full bg-background flex items-center justify-center">
+                <UserCircle className="h-5 w-5 text-primary" />
+              </div>
+            </button>
+            <AnimatePresence>
+              {isProfileOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsProfileOpen(false)} />
+                  <motion.div
+                    initial={{ opacity: 0, y: 8, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 8, scale: 0.95 }}
+                    className="absolute right-0 mt-2 w-52 z-50 overflow-hidden rounded-2xl border border-white/20 bg-white/90 dark:bg-slate-950/95 backdrop-blur-2xl shadow-elegant p-2"
+                  >
+                    <div className="px-3 py-2">
+                      <p className="text-sm font-bold text-foreground">
+                        {overviewQuery.data?.gymName ?? "My Membership"}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {overviewQuery.data?.planName ?? "Member"}
+                      </p>
+                    </div>
+                    <div className="h-px bg-border/60 my-1" />
+                    <button
+                      onClick={() => {
+                        setActiveTab("pass");
+                        setIsProfileOpen(false);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-foreground hover:bg-primary/5 text-left"
+                    >
+                      <Settings className="h-4 w-4 text-primary" /> My Pass &amp; Plan
+                    </button>
+                    <button
+                      onClick={handleLogout}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold text-red-500 hover:bg-red-500/10 text-left"
+                    >
+                      <LogOut className="h-4 w-4" /> Log Out
+                    </button>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
 
@@ -579,7 +646,10 @@ function MemberDashboard() {
       </AnimatePresence>
 
       {/* Bottom Navigation */}
-      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[380px] z-50 px-4">
+      <div
+        className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[380px] z-50 px-4"
+        style={{ bottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}
+      >
         <div className="bg-white/80 dark:bg-black/80 backdrop-blur-2xl border border-white/20 rounded-full p-2 shadow-elegant flex items-center justify-between">
           <button
             onClick={() => setActiveTab("pass")}

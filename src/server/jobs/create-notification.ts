@@ -1,17 +1,16 @@
-import { cacheKeys, redisCache } from "@/server/cache";
-import { prisma } from "@/server/db";
+import { emitNotification } from "@/server/services/notification.service";
 import type { NotificationJobData } from "@/server/jobs/job-types";
 
+/**
+ * Persists a notification produced by a background job. Delegates to the
+ * shared notification service so inline and queued notifications behave
+ * identically (same persistence + cache invalidation).
+ */
 export async function createNotificationRecord(data: NotificationJobData): Promise<void> {
-  await prisma.notification.create({
-    data: {
-      gymId: data.gymId,
-      text: data.text,
-      timeLabel: "just now",
-      type: data.type,
-      color: data.color,
-    },
+  await emitNotification({
+    gymId: data.gymId,
+    text: data.text,
+    type: data.type,
+    color: data.color,
   });
-
-  await redisCache.del(cacheKeys.dashboard(data.gymId));
 }

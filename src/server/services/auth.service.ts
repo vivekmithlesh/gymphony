@@ -11,7 +11,13 @@ import { prisma } from "@/server/db";
 import { createOtp, deleteOtp, verifyAndConsumeOtp } from "@/server/auth/otp";
 import { sendOtpViaMsg91 } from "@/server/auth/msg91";
 import { createSessionToken } from "@/server/auth/session";
-import type { AuthResult, OtpSendResult, OwnerSignupMetadata } from "@/types/auth.types";
+import { getPublicGymInfo } from "@/server/services/join.service";
+import type {
+  AuthResult,
+  MemberSignupMetadata,
+  OtpSendResult,
+  OwnerSignupMetadata,
+} from "@/types/auth.types";
 
 const ownerSignupMetadataSchema = z.object({
   ownerName: z.string().min(2),
@@ -19,6 +25,12 @@ const ownerSignupMetadataSchema = z.object({
   city: z.string().min(2),
   email: z.string().email(),
   phone: z.string().regex(/^[6-9]\d{9}$/),
+});
+
+const memberSignupMetadataSchema = z.object({
+  fullName: z.string().min(2),
+  phone: z.string().regex(/^[6-9]\d{9}$/),
+  gymId: z.string().uuid(),
 });
 
 function normalizePhone(phone: string): string {
@@ -268,6 +280,130 @@ export async function verifyMemberLoginOtp(phone: string, code: string): Promise
     message: "Login successful",
     sessionToken,
     redirectTo: "/member-dashboard",
+  };
+}
+
+/**
+ * Sends OTP for member self-signup via the Join Gym QR flow.
+ * Validates that the target gym exists and is accepting members, and that the
+ * phone is not already tied to a non-member (owner/staff) account.
+ */
+export async function sendMemberSignupOtp(data: MemberSignupMetadata): Promise<OtpSendResult> {
+  const parsed = memberSignupMetadataSchema.safeParse({
+    ...data,
+    phone: normalizePhone(data.phone),
+    fullName: data.fullName.trim(),
+  });
+
+  if (!parsed.success) {
+    return { success: false, message: "Please enter a valid name and mobile number." };
+  }
+
+  const gym = await getPublicGymInfo(parsed.data.gymId);
+
+  if (!gym || !gym.isAcceptingMembers) {
+    return {
+      success: false,
+      message: "This gym link is invalid or no longer accepting members.",
+    };
+  }
+
+  const existingUser = await prisma.user.findFirst({
+    where: { phone: parsed.data.phone },
+    select: { role: true },
+  });
+
+  if (existingUser && existingUser.role !== PrismaUserRole.MEMBER) {
+    return {
+      success: false,
+      message: "This phone number is already linked to a gym owner or staff account.",
+    };
+  }
+
+  return createAndSendOtp(parsed.data.phone, OTP_PURPOSES.MEMBER_SIGNUP, parsed.data);
+}
+
+/**
+ * Verifies the member-signup OTP, creates (or reuses) the member account, and
+ * issues a session scoped to the gym they are joining. The member can then
+ * complete enrollment (free activation or paid checkout).
+ */
+export async function verifyMemberSignupOtp(phone: string, code: string): Promise<AuthResult> {
+  const normalizedPhone = normalizePhone(phone);
+  const otpRecord = await verifyAndConsumeOtp(normalizedPhone, OTP_PURPOSES.MEMBER_SIGNUP, code);
+
+  if (!otpRecord) {
+    return { success: false, message: "Invalid or expired OTP" };
+  }
+
+  const metadata = memberSignupMetadataSchema.safeParse(otpRecord.metadata);
+
+  if (!metadata.success) {
+    return {
+      success: false,
+      message: "Signup data is incomplete. Please scan the gym QR again.",
+    };
+  }
+
+  const gym = await getPublicGymInfo(metadata.data.gymId);
+
+  if (!gym || !gym.isAcceptingMembers) {
+    return {
+      success: false,
+      message: "This gym is no longer accepting members.",
+    };
+  }
+
+  const existingUser = await prisma.user.findFirst({
+    where: { phone: normalizedPhone },
+    select: { id: true, role: true, fullName: true, isActive: true },
+  });
+
+  if (existingUser && existingUser.role !== PrismaUserRole.MEMBER) {
+    return {
+      success: false,
+      message: "This phone number is already linked to another account.",
+    };
+  }
+
+  const memberUser =
+    existingUser ??
+    (await prisma.user.create({
+      data: {
+        role: PrismaUserRole.MEMBER,
+        fullName: metadata.data.fullName,
+        phone: normalizedPhone,
+        isActive: true,
+      },
+      select: { id: true, role: true, fullName: true, isActive: true },
+    }));
+
+  // Reactivate a previously soft-deleted member who rejoins.
+  if (existingUser && !existingUser.isActive) {
+    await prisma.user.update({
+      where: { id: memberUser.id },
+      data: { isActive: true },
+      select: { id: true },
+    });
+  }
+
+  const existingMembership = await prisma.membership.findFirst({
+    where: { gymId: metadata.data.gymId, memberUserId: memberUser.id },
+    select: { id: true },
+  });
+
+  const sessionToken = await createSessionToken({
+    userId: memberUser.id,
+    gymId: metadata.data.gymId,
+    role: PrismaUserRole.MEMBER,
+  });
+
+  return {
+    success: true,
+    message: existingMembership ? "Welcome back!" : "Account verified",
+    sessionToken,
+    alreadyMember: Boolean(existingMembership),
+    redirectTo: existingMembership ? "/member-dashboard" : undefined,
   };
 }
 
