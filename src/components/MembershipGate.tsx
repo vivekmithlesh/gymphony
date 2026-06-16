@@ -16,6 +16,7 @@ import { supabase } from "@/supabase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { LegalLinksFooter } from "@/components/LegalLinksFooter";
+import { logEvent } from "@/lib/logger";
 
 interface GatePlan {
   id: string;
@@ -71,10 +72,11 @@ export function MembershipGate({ memberId, gym, plans, onActivated }: Membership
       .maybeSingle();
     if ((data?.status ?? "").toLowerCase() === ACTIVE) {
       activatedRef.current = true;
+      logEvent("membership", "activated", { memberId, gymId: gym.id });
       toast.success("Membership activated! Welcome in. 💪");
       onActivated();
     }
-  }, [memberId, onActivated]);
+  }, [memberId, onActivated, gym.id]);
 
   // On mount: resume into "waiting" if a pending payment already exists (e.g. a
   // refresh), otherwise start at plan selection.
@@ -149,10 +151,22 @@ export function MembershipGate({ memberId, gym, plans, onActivated }: Membership
         .select("id")
         .single();
       if (error) {
+        logEvent("payment", "pending-create-failed", {
+          method,
+          gymId: gym.id,
+          error: error.message,
+        });
         console.error("Pending payment insert failed:", error);
         toast.error(`Could not submit payment: ${error.message || "Please try again."}`);
         return null;
       }
+      logEvent("membership", "pending-payment-created", {
+        method,
+        gymId: gym.id,
+        memberId,
+        plan: plan.plan_name,
+        paymentId: data.id,
+      });
       return data.id as string;
     },
     [plan, memberId, gym.id, gym.gym_owner_id],
@@ -200,12 +214,23 @@ export function MembershipGate({ memberId, gym, plans, onActivated }: Membership
       if (!result.success) {
         // Mock disabled for this gym, etc. — fall back to the waiting lock so the
         // owner can still approve manually.
+        logEvent("payment", "online-failed", { gymId: gym.id, memberId, reason: result.error });
         toast.error(result.error || "Could not complete the online payment.");
         setPhase("waiting");
         return;
       }
+      logEvent("payment", "online-success", {
+        gymId: gym.id,
+        memberId,
+        paymentId: pendingPaymentId,
+      });
       await checkActivated();
     } catch (err: any) {
+      logEvent("payment", "online-error", {
+        gymId: gym.id,
+        memberId,
+        error: String(err?.message || err),
+      });
       console.error("simulate online payment failed:", err);
       toast.error(err?.message || "Online payment failed. Please try Pay at Desk.");
       setPhase("waiting");

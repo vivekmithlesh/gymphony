@@ -10,6 +10,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { extractGymIdFromQr } from "@/lib/app-url";
 
 interface MemberJoinScannerProps {
   /** Called with the decoded gym_id after a successful scan. */
@@ -19,21 +20,10 @@ interface MemberJoinScannerProps {
   className?: string;
 }
 
-// Read the gym_id out of a Join QR. The owner's poster encodes
-// {"action":"join","gym_id":"<uuid>"}; we also accept {"gym_id":"<uuid>"} and a
-// bare uuid for resilience against older/check-in posters.
-function extractGymId(decoded: string): string | null {
-  const text = (decoded || "").trim();
-  if (!text) return null;
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed.gym_id === "string") return parsed.gym_id.trim();
-  } catch {
-    /* not JSON — fall through */
-  }
-  const uuid = text.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-  return uuid ? uuid[0] : null;
-}
+// Read the gym_id out of a Join QR. The owner's poster now encodes the deep-link
+// {origin}/join/<uuid>; we also accept the legacy {"action":"join","gym_id":…}
+// JSON and a bare uuid for resilience against older/check-in posters.
+const extractGymId = extractGymIdFromQr;
 
 // Member-side "Scan to Join": opens the camera, decodes the owner's Join QR, and
 // hands the gym_id back to the dashboard, which links the membership and routes

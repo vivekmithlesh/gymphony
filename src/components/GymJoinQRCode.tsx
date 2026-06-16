@@ -9,22 +9,20 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { buildJoinUrl } from "@/lib/app-url";
 
 interface GymJoinQRCodeProps {
-  /** The gym's UUID — encoded into the join payload. */
+  /** The gym's UUID — encoded into the join deep-link. */
   gymId: string | null | undefined;
   gymName?: string | null;
 }
 
-// Owner prints this poster at the front desk. It encodes
-// {"action":"join","gym_id":"<uuid>"} so a prospective member scans it from the
-// member app's "Scan to Join" screen and is linked to this gym, then routed to
-// plan selection + checkout. Distinct from the Wall Check-in QR (attendance).
+// Owner prints this poster at the front desk. It encodes the deep-link
+// {origin}/join/<uuid>, so ANY phone camera (no app needed) opens the join page,
+// where the prospect signs in, is linked to this gym, and picks a plan + pays.
+// Distinct from the Wall Check-in QR (attendance).
 export function GymJoinQRCode({ gymId, gymName }: GymJoinQRCodeProps) {
-  const payload = useMemo(
-    () => (gymId ? JSON.stringify({ action: "join", gym_id: gymId }) : ""),
-    [gymId],
-  );
+  const payload = useMemo(() => (gymId ? buildJoinUrl(gymId) : ""), [gymId]);
   const qrRef = useRef<HTMLDivElement>(null);
 
   const downloadPng = () => {
@@ -50,7 +48,7 @@ export function GymJoinQRCode({ gymId, gymName }: GymJoinQRCodeProps) {
           <h1 style="margin:0 0 8px;">${gymName || "Our Gym"}</h1>
           <p style="margin:0 0 24px;font-size:18px;color:#555;">Scan to join &amp; pick your plan</p>
           <img src="${dataUrl}" style="width:320px;height:320px;" />
-          <p style="margin:24px 0 0;font-size:14px;color:#888;">Open the member app and tap "Scan to Join".</p>
+          <p style="margin:24px 0 0;font-size:14px;color:#888;">Scan with your phone camera — no app needed.</p>
         </body>
       </html>`);
     w.document.close();

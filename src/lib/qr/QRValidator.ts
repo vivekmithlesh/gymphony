@@ -39,6 +39,14 @@ export const QRValidator = {
     const text = (raw || "").trim();
     if (!text) return { type: "unknown", raw };
 
+    // New URL deep-links (what a native camera opens): ".../join/<id>" and
+    // ".../checkin/<id>". Checked first so a scanned poster URL classifies even
+    // though it contains '.' (the domain) and isn't JSON.
+    const joinUrl = text.match(new RegExp(`/join/(${UUID_RE.source})`, "i"));
+    if (joinUrl) return { type: QR_TYPES.JOIN, gymId: joinUrl[1] };
+    const checkinUrl = text.match(new RegExp(`/checkin/(${UUID_RE.source})`, "i"));
+    if (checkinUrl) return { type: QR_TYPES.WALL, gymId: checkinUrl[1] };
+
     // Signed member pass: "<base64payload>.<hexsig>"
     if (text.includes(".") && !text.startsWith("{")) {
       const [b64] = text.split(".");

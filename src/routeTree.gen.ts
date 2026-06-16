@@ -27,7 +27,9 @@ import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as CityLeaderboardRouteImport } from './routes/city-leaderboard'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as JoinGymIdRouteImport } from './routes/join.$gymId'
 import { Route as GymDetailGymIdRouteImport } from './routes/gym-detail.$gymId'
+import { Route as CheckinGymIdRouteImport } from './routes/checkin.$gymId'
 
 const VerifyOtpRoute = VerifyOtpRouteImport.update({
   id: '/verify-otp',
@@ -119,9 +121,19 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const JoinGymIdRoute = JoinGymIdRouteImport.update({
+  id: '/join/$gymId',
+  path: '/join/$gymId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const GymDetailGymIdRoute = GymDetailGymIdRouteImport.update({
   id: '/gym-detail/$gymId',
   path: '/gym-detail/$gymId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CheckinGymIdRoute = CheckinGymIdRouteImport.update({
+  id: '/checkin/$gymId',
+  path: '/checkin/$gymId',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -144,7 +156,9 @@ export interface FileRoutesByFullPath {
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/verify-otp': typeof VerifyOtpRoute
+  '/checkin/$gymId': typeof CheckinGymIdRoute
   '/gym-detail/$gymId': typeof GymDetailGymIdRoute
+  '/join/$gymId': typeof JoinGymIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -165,7 +179,9 @@ export interface FileRoutesByTo {
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/verify-otp': typeof VerifyOtpRoute
+  '/checkin/$gymId': typeof CheckinGymIdRoute
   '/gym-detail/$gymId': typeof GymDetailGymIdRoute
+  '/join/$gymId': typeof JoinGymIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -187,7 +203,9 @@ export interface FileRoutesById {
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/verify-otp': typeof VerifyOtpRoute
+  '/checkin/$gymId': typeof CheckinGymIdRoute
   '/gym-detail/$gymId': typeof GymDetailGymIdRoute
+  '/join/$gymId': typeof JoinGymIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -210,7 +228,9 @@ export interface FileRouteTypes {
     | '/signup'
     | '/terms'
     | '/verify-otp'
+    | '/checkin/$gymId'
     | '/gym-detail/$gymId'
+    | '/join/$gymId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -231,7 +251,9 @@ export interface FileRouteTypes {
     | '/signup'
     | '/terms'
     | '/verify-otp'
+    | '/checkin/$gymId'
     | '/gym-detail/$gymId'
+    | '/join/$gymId'
   id:
     | '__root__'
     | '/'
@@ -252,7 +274,9 @@ export interface FileRouteTypes {
     | '/signup'
     | '/terms'
     | '/verify-otp'
+    | '/checkin/$gymId'
     | '/gym-detail/$gymId'
+    | '/join/$gymId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -274,7 +298,9 @@ export interface RootRouteChildren {
   SignupRoute: typeof SignupRoute
   TermsRoute: typeof TermsRoute
   VerifyOtpRoute: typeof VerifyOtpRoute
+  CheckinGymIdRoute: typeof CheckinGymIdRoute
   GymDetailGymIdRoute: typeof GymDetailGymIdRoute
+  JoinGymIdRoute: typeof JoinGymIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -405,11 +431,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/join/$gymId': {
+      id: '/join/$gymId'
+      path: '/join/$gymId'
+      fullPath: '/join/$gymId'
+      preLoaderRoute: typeof JoinGymIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/gym-detail/$gymId': {
       id: '/gym-detail/$gymId'
       path: '/gym-detail/$gymId'
       fullPath: '/gym-detail/$gymId'
       preLoaderRoute: typeof GymDetailGymIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/checkin/$gymId': {
+      id: '/checkin/$gymId'
+      path: '/checkin/$gymId'
+      fullPath: '/checkin/$gymId'
+      preLoaderRoute: typeof CheckinGymIdRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -434,7 +474,9 @@ const rootRouteChildren: RootRouteChildren = {
   SignupRoute: SignupRoute,
   TermsRoute: TermsRoute,
   VerifyOtpRoute: VerifyOtpRoute,
+  CheckinGymIdRoute: CheckinGymIdRoute,
   GymDetailGymIdRoute: GymDetailGymIdRoute,
+  JoinGymIdRoute: JoinGymIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -7,6 +7,7 @@
 // non-secret payloads (wall poster, join poster).
 // =============================================================================
 import { supabase } from "@/supabase";
+import { buildCheckinUrl, buildJoinUrl } from "@/lib/app-url";
 
 export const QR_TYPES = {
   MEMBER_PASS: "member_pass",
@@ -60,13 +61,13 @@ export const QRService = {
     return (data ?? { success: false, error: "No response from server." }) as KioskCheckInResult;
   },
 
-  /** Static wall-poster payload — identifies the gym for geo-fenced check-in. */
+  /** Static wall-poster payload — a deep-link any phone camera can open to check in. */
   buildWallPayload(gymId: string): string {
-    return JSON.stringify({ gym_id: gymId });
+    return buildCheckinUrl(gymId);
   },
 
-  /** Static join-poster payload — for a new member joining the gym. */
+  /** Static join-poster payload — a deep-link any phone camera can open to join. */
   buildJoinPayload(gymId: string): string {
-    return JSON.stringify({ action: "join", gym_id: gymId });
+    return buildJoinUrl(gymId);
   },
 };

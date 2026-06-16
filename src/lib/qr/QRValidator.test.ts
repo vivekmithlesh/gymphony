@@ -45,9 +45,14 @@ describe("QRValidator.parse", () => {
     expect(r.memberId).toBe(MEMBER);
   });
 
-  it("classifies wall and join posters", () => {
+  it("classifies wall and join posters (legacy JSON form)", () => {
     expect(QRValidator.parse(JSON.stringify({ gym_id: GYM }))).toEqual({ type: "wall", gymId: GYM });
     expect(QRValidator.parse(JSON.stringify({ action: "join", gym_id: GYM }))).toEqual({ type: "join", gymId: GYM });
+  });
+
+  it("classifies the new URL deep-link posters", () => {
+    expect(QRValidator.parse(`https://app.gymphony.test/join/${GYM}`)).toEqual({ type: "join", gymId: GYM });
+    expect(QRValidator.parse(`https://app.gymphony.test/checkin/${GYM}`)).toEqual({ type: "wall", gymId: GYM });
   });
 
   it("returns unknown for empty / malformed / junk input", () => {

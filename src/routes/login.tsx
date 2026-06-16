@@ -29,6 +29,7 @@ import { toast } from "sonner";
 import { useState } from "react";
 import { getDashboardPathForRole, resolveUserRole } from "@/lib/auth-role";
 import { INTERNATIONAL_PHONE_REGEX, cleanPhoneInput, normalizeToE164Phone } from "@/lib/phone";
+import { postAuthDestination, readRedirectParam, isSafeRedirectPath } from "@/lib/auth-redirect";
 
 const signupSchema = z.object({
   gymName: z.string().min(2, "Gym name must be at least 2 characters"),
@@ -239,6 +240,12 @@ function LoginPage() {
 
       toast.success("Logged in successfully!");
       loginForm.reset();
+      // Honour a saved QR destination (e.g. /checkin/:id) before the dashboard.
+      const target = postAuthDestination();
+      if (target) {
+        window.location.assign(target);
+        return;
+      }
       navigate({ to: getDashboardPathForRole(resolvedRole), replace: true });
     } catch (error: any) {
       toast.error(error?.message || "Login failed. Please try again.");
@@ -250,11 +257,14 @@ function LoginPage() {
   const handleGoogleLogin = async () => {
     setIsGoogleLoading(true);
     try {
+      // Carry any saved QR destination through the OAuth round-trip.
+      const redirectPath = readRedirectParam();
+      const dest = isSafeRedirectPath(redirectPath) ? redirectPath : "/dashboard";
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
           // Dynamic origin so it works in dev, preview and production.
-          redirectTo: `${window.location.origin}/dashboard`,
+          redirectTo: `${window.location.origin}${dest}`,
         },
       });
 

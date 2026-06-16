@@ -13,6 +13,8 @@ import * as z from "zod";
 import { supabase } from "@/supabase";
 import { useAuth } from "@/lib/auth-context";
 import { toast } from "sonner";
+import { postAuthDestination, readRedirectParam, isSafeRedirectPath } from "@/lib/auth-redirect";
+import { logEvent } from "@/lib/logger";
 // Member-login enforces member-only flow; avoid role fallback logic.
 
 const memberLoginSchema = z.object({
@@ -41,11 +43,19 @@ function MemberLoginPage() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const { session } = useAuth();
 
-  // A signed-in user on this page goes straight to the member dashboard.
+  // Single navigation authority: once a session exists (fresh login OR arriving
+  // already signed in), honour a saved QR destination (e.g. /checkin/:id) first,
+  // otherwise land on the member dashboard. A real navigation is used for the
+  // redirect so it can't race with the global <AuthRedirects/>.
   useEffect(() => {
-    if (session) {
-      navigate({ to: "/member-dashboard", replace: true });
+    if (!session) return;
+    const target = postAuthDestination();
+    logEvent("auth", "post-login-redirect", { target: target ?? "/member-dashboard" });
+    if (target) {
+      window.location.assign(target);
+      return;
     }
+    navigate({ to: "/member-dashboard", replace: true });
   }, [session, navigate]);
 
   const loginForm = useForm<MemberLoginFormValues>({
@@ -161,7 +171,8 @@ function MemberLoginPage() {
           if (signUpData.session) {
             toast.success("✅ Account created successfully!");
             loginForm.reset();
-            navigate({ to: "/member-dashboard", replace: true });
+            // Navigation (incl. any saved QR destination) is handled by the
+            // session effect above the instant the session is established.
           } else {
             toast.success("✅ Account created. Please confirm your email, then log in.");
           }
@@ -180,7 +191,8 @@ function MemberLoginPage() {
         await ensureMemberProfile(loginData.user);
         toast.success("✅ Welcome back!");
         loginForm.reset();
-        navigate({ to: "/member-dashboard", replace: true });
+        // The session effect above performs the redirect (saved QR destination
+        // or the member dashboard) once the session is live.
       }
     } catch (err: any) {
       console.error("Member login error:", err);
@@ -193,11 +205,15 @@ function MemberLoginPage() {
   const handleGoogleLogin = async () => {
     setIsGoogleLoading(true);
     try {
+      // Carry any saved QR destination through the OAuth round-trip so the user
+      // lands back on /checkin/:id or /join/:id (not just the dashboard).
+      const redirectPath = readRedirectParam();
+      const dest = isSafeRedirectPath(redirectPath) ? redirectPath : "/member-dashboard";
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
           // Dynamic origin so it works in dev, preview and production.
-          redirectTo: `${window.location.origin}/member-dashboard`,
+          redirectTo: `${window.location.origin}${dest}`,
         },
       });
 

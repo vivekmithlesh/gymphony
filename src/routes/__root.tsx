@@ -3,6 +3,8 @@ import { Toaster } from "sonner";
 import { useEffect } from "react";
 import { getDashboardPathForRole } from "@/lib/auth-role";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { postAuthDestination } from "@/lib/auth-redirect";
+import { logEvent } from "@/lib/logger";
 
 import appCss from "../styles.css?url";
 
@@ -93,6 +95,18 @@ function AuthRedirects() {
     if (session) {
       // Wait for role to settle before deciding owner-vs-member destinations.
       if (!roleResolved) return;
+
+      // If the user authenticated from a QR deep-link, honour that destination
+      // before the default dashboard routing. A real navigation guarantees the
+      // dynamic target (e.g. /checkin/:id) loads regardless of router typing.
+      if (isOwnerAuthPage || isMemberAuthPage) {
+        const target = postAuthDestination();
+        if (target) {
+          logEvent("auth", "redirect-resume", { target });
+          if (typeof window !== "undefined") window.location.assign(target);
+          return;
+        }
+      }
 
       if (role === "member") {
         const target = getDashboardPathForRole(role);

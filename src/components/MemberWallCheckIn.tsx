@@ -11,6 +11,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { extractGymIdFromQr } from "@/lib/app-url";
 
 interface MemberWallCheckInProps {
   /** The authenticated member's id (auth.uid()). */
@@ -32,20 +33,10 @@ interface WallCheckinResult {
   already_checked_in?: boolean;
 }
 
-// Read the gym_id out of the QR payload. The owner's wall QR encodes
-// {"gym_id":"<uuid>"}, but we also accept a bare uuid string for resilience.
-function extractGymId(decoded: string): string | null {
-  const text = (decoded || "").trim();
-  if (!text) return null;
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed.gym_id === "string") return parsed.gym_id.trim();
-  } catch {
-    /* not JSON — fall through */
-  }
-  const uuid = text.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-  return uuid ? uuid[0] : null;
-}
+// Read the gym_id out of the QR payload. The owner's wall QR now encodes the
+// deep-link {origin}/checkin/<uuid>; we also accept the legacy {"gym_id":…} JSON
+// and a bare uuid string for resilience.
+const extractGymId = extractGymIdFromQr;
 
 // Promise wrapper around the HTML5 Geolocation API.
 function getCurrentPosition(): Promise<GeolocationPosition> {

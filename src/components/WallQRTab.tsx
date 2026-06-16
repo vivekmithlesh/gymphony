@@ -9,9 +9,10 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { buildCheckinUrl } from "@/lib/app-url";
 
 interface WallQRTabProps {
-  /** The gym's UUID — encoded into the QR payload. */
+  /** The gym's UUID — encoded into the check-in deep-link. */
   gymId: string | null | undefined;
   gymName?: string | null;
   /** Whether latitude/longitude are set — geo-fenced check-in needs them. */
@@ -20,9 +21,10 @@ interface WallQRTabProps {
 
 // Dedicated Settings tab. Renders ONLY the static Wall Check-in QR poster plus
 // Print and Download actions. The owner prints this once and sticks it on the
-// wall; members scan it from their own phone to check in (geo-fenced server-side).
+// wall; members scan it with their phone camera to check in (active-membership +
+// optional geo-fence verified server-side).
 export function WallQRTab({ gymId, gymName, hasLocation = true }: WallQRTabProps) {
-  const payload = useMemo(() => (gymId ? JSON.stringify({ gym_id: gymId }) : ""), [gymId]);
+  const payload = useMemo(() => (gymId ? buildCheckinUrl(gymId) : ""), [gymId]);
   const qrRef = useRef<HTMLDivElement>(null);
 
   const downloadPng = () => {
@@ -48,7 +50,7 @@ export function WallQRTab({ gymId, gymName, hasLocation = true }: WallQRTabProps
           <h1 style="margin:0 0 8px;">${gymName || "Our Gym"}</h1>
           <p style="margin:0 0 24px;font-size:18px;color:#555;">Scan to check in</p>
           <img src="${dataUrl}" style="width:320px;height:320px;" />
-          <p style="margin:24px 0 0;font-size:14px;color:#888;">Open your camera or the gym app and point it here.</p>
+          <p style="margin:24px 0 0;font-size:14px;color:#888;">Scan with your phone camera to check in — no app needed.</p>
         </body>
       </html>`);
     w.document.close();

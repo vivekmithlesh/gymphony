@@ -31,6 +31,7 @@ import { useState, useRef, useEffect } from "react";
 import { getDashboardPathForRole, resolveUserRole } from "@/lib/auth-role";
 import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
 import { INTERNATIONAL_PHONE_REGEX, cleanPhoneInput, normalizeToE164Phone } from "@/lib/phone";
+import { postAuthDestination } from "@/lib/auth-redirect";
 
 const signupSchema = z.object({
   gymName: z.string().min(2, "Gym name must be at least 2 characters"),
@@ -97,10 +98,15 @@ function SignupPage() {
   const authControllerRef = useRef<AbortController | null>(null);
   const { session, role, roleResolved } = useAuth();
 
-  // A signed-in user on the join page is routed to their dashboard (parity with
-  // the previous behaviour), now driven by the global auth state.
+  // A signed-in user on the join page is routed to their saved QR destination if
+  // any, else to their dashboard (parity with the previous behaviour).
   useEffect(() => {
     if (session && roleResolved && role) {
+      const target = postAuthDestination();
+      if (target) {
+        window.location.assign(target);
+        return;
+      }
       navigate({ to: getDashboardPathForRole(role), replace: true });
     }
     return () => {
@@ -459,6 +465,11 @@ function SignupPage() {
       const resolvedRole = (await resolveUserRole(user)) ?? "owner";
       toast.success("✅ Logged in successfully!");
       loginForm.reset();
+      const target = postAuthDestination();
+      if (target) {
+        window.location.assign(target);
+        return;
+      }
       navigate({ to: getDashboardPathForRole(resolvedRole), replace: true });
     } catch (error: any) {
       if (
