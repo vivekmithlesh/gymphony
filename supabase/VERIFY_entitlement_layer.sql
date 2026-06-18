@@ -87,6 +87,12 @@ with checks(kind, object_name, present) as (
   union all select 'function', 'get_platform_upi',           exists (select 1 from pg_proc where proname='get_platform_upi')
   union all select 'function', 'app_set_platform_upi',       exists (select 1 from pg_proc where proname='app_set_platform_upi')
   union all select 'config',   'platform_upi_id seeded',     exists (select 1 from public.app_config where key='platform_upi_id')
+
+  -- ---- Manual-UPI v2 (20260630): notes, QR/support config, admin list -
+  union all select 'column',   'subscription_payments.notes', exists (select 1 from information_schema.columns where table_schema='public' and table_name='subscription_payments' and column_name='notes')
+  union all select 'function', 'app_admin_list_subscriptions', exists (select 1 from pg_proc where proname='app_admin_list_subscriptions')
+  union all select 'config',   'platform_upi_qr_url seeded',  exists (select 1 from public.app_config where key='platform_upi_qr_url')
+  union all select 'config',   'platform_support_email seeded', exists (select 1 from public.app_config where key='platform_support_email')
   -- mock owner-billing system REMOVED by 20260629 — present=t (absent) = OK:
   union all select 'removed',  'app_simulate_online_payment absent', not exists (select 1 from pg_proc where proname='app_simulate_online_payment')
   union all select 'removed',  'mock_payments_enabled config absent', not exists (select 1 from public.app_config where key='mock_payments_enabled')

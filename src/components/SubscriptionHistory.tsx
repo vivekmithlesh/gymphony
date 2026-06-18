@@ -54,6 +54,7 @@ export function SubscriptionHistory() {
                 {new Date(r.created_at).toLocaleDateString()} · {formatINR(Number(r.amount))}
                 {r.utr ? ` · UTR ${r.utr}` : ""}
               </p>
+              {r.notes && <p className="text-xs italic text-muted-foreground">“{r.notes}”</p>}
               {r.status === "rejected" && r.reject_reason && (
                 <p className="text-xs text-red-500">Reason: {r.reject_reason}</p>
               )}

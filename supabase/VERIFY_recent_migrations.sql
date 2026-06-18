@@ -81,6 +81,17 @@ with checks(migration, object, present) as (
          exists(select 1 from pg_proc where proname = 'app_review_subscription_payment')
   union all select '20260629_manual_upi_subscriptions', 'fn get_platform_upi',
          exists(select 1 from pg_proc where proname = 'get_platform_upi')
+
+  -- 20260630_manual_upi_subscriptions_v2 — notes, QR/support config, admin list
+  union all select '20260630_manual_upi_subscriptions_v2', 'col subscription_payments.notes',
+         exists(select 1 from information_schema.columns
+                where table_schema='public' and table_name='subscription_payments' and column_name='notes')
+  union all select '20260630_manual_upi_subscriptions_v2', 'fn app_admin_list_subscriptions',
+         exists(select 1 from pg_proc where proname = 'app_admin_list_subscriptions')
+  union all select '20260630_manual_upi_subscriptions_v2', 'config platform_upi_qr_url',
+         exists(select 1 from public.app_config where key = 'platform_upi_qr_url')
+  union all select '20260630_manual_upi_subscriptions_v2', 'config platform_support_email',
+         exists(select 1 from public.app_config where key = 'platform_support_email')
 )
 select migration,
        object,
