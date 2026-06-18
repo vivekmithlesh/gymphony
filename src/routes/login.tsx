@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { motion } from "framer-motion";
-import { ArrowRight, Building2, Mail, MapPin, Phone, Sparkles, Loader2, Check, ChevronsUpDown, Lock, Chrome } from "lucide-react";
+import { ArrowRight, Building2, Mail, MapPin, Sparkles, Loader2, Check, ChevronsUpDown, Lock, Chrome } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -28,7 +28,8 @@ import { supabase } from "@/supabase";
 import { toast } from "sonner";
 import { useState } from "react";
 import { getDashboardPathForRole, resolveUserRole } from "@/lib/auth-role";
-import { INTERNATIONAL_PHONE_REGEX, cleanPhoneInput, normalizeToE164Phone } from "@/lib/phone";
+import { IndianMobileInput } from "@/components/IndianMobileInput";
+import { isValidIndianMobile, looksLikeIndianMobile, toIndianLocal, toIndianE164 } from "@/lib/phone";
 import { postAuthDestination, readRedirectParam, isSafeRedirectPath } from "@/lib/auth-redirect";
 
 const signupSchema = z.object({
@@ -37,8 +38,7 @@ const signupSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
   mobile: z
     .string()
-    .transform((value) => cleanPhoneInput(value))
-    .refine((value) => INTERNATIONAL_PHONE_REGEX.test(value), "Please enter a valid international mobile number"),
+    .refine((value) => isValidIndianMobile(value), "Enter a valid 10-digit Indian mobile number"),
   password: z.string().min(6, "Password must be at least 6 characters"),
 });
 
@@ -149,7 +149,7 @@ function LoginPage() {
               gym_name: data.gymName,
               city: data.city,
               email: data.email,
-              mobile_number: data.mobile,
+              mobile_number: toIndianE164(data.mobile),
               role: "owner",
             },
           ],
@@ -193,13 +193,15 @@ function LoginPage() {
     try {
       let loginEmail = data.identifier;
 
-      // Allow logging in with an international mobile number: look up the email.
-      const normalizedMobile = normalizeToE164Phone(data.identifier, "");
-      if (normalizedMobile) {
+      // Allow logging in with a 10-digit Indian mobile: look up the email
+      // (match both the canonical +91 E.164 form and legacy bare-10-digit rows).
+      if (looksLikeIndianMobile(data.identifier)) {
+        const local = toIndianLocal(data.identifier);
+        const e164 = toIndianE164(data.identifier);
         const { data: profile, error: profileError } = await supabase
           .from("gym_profiles")
           .select("email")
-          .or(`mobile_number.eq.${normalizedMobile},phone.eq.${normalizedMobile}`)
+          .or(`mobile_number.eq.${e164},phone.eq.${e164},mobile_number.eq.${local},phone.eq.${local}`)
           .maybeSingle();
 
         if (profileError || !profile?.email) {
@@ -408,20 +410,22 @@ function LoginPage() {
                         {signupForm.formState.errors.email && <p className="text-xs text-red-500">{signupForm.formState.errors.email.message}</p>}
                       </div>
 
-                      <div className="space-y-2 group">
-                        <Label htmlFor="mobile" className="text-sm font-medium text-foreground/80 group-focus-within:text-primary transition-colors">Mobile Number</Label>
-                        <div className="relative">
-                          <Phone className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
-                          <Input
+                      <Controller
+                        control={signupForm.control}
+                        name="mobile"
+                        render={({ field }) => (
+                          <IndianMobileInput
                             id="mobile"
-                            type="tel"
-                            {...signupForm.register("mobile")}
-                            placeholder="e.g. 9876543210"
-                            className={`h-12 pl-11 bg-white/5 border-white/10 focus:border-primary/50 focus:ring-primary/20 transition-all rounded-xl ${signupForm.formState.errors.mobile ? 'border-red-500' : ''}`}
+                            label="Mobile Number"
+                            value={field.value}
+                            onChange={field.onChange}
+                            placeholder="9876543210"
+                            error={signupForm.formState.errors.mobile?.message}
+                            className="group"
+                            inputClassName="bg-white/5 border-white/10 focus:border-primary/50 focus:ring-primary/20"
                           />
-                        </div>
-                        {signupForm.formState.errors.mobile && <p className="text-xs text-red-500">{signupForm.formState.errors.mobile.message}</p>}
-                      </div>
+                        )}
+                      />
 
                       <div className="space-y-2 group">
                         <Label htmlFor="password-signup" className="text-sm font-medium text-foreground/80 group-focus-within:text-primary transition-colors">Password</Label>

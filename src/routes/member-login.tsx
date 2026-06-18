@@ -144,38 +144,13 @@ function MemberLoginPage() {
       if (error) {
         const msg = String(error.message || "").toLowerCase();
 
-        // Combined "Login / Sign Up": if the account doesn't exist yet, create it.
+        // SECURITY: the Login button must NEVER create an account. Supabase
+        // returns the same "invalid login credentials" for both "no such
+        // account" and "wrong password" (deliberate anti-enumeration), so we
+        // surface one honest message that points unregistered users at signup
+        // WITHOUT auto-provisioning a new auth user.
         if (msg.includes("invalid login credentials")) {
-          const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-            email: data.email,
-            password: data.password,
-            options: { data: { role: "member" } },
-          });
-
-          if (signUpError) {
-            const sMsg = String(signUpError.message || "").toLowerCase();
-            // "Already registered" here means the account exists and the password
-            // was simply wrong — surface that, not a confusing signup error.
-            toast.error(
-              sMsg.includes("already") || sMsg.includes("registered") || sMsg.includes("exists")
-                ? "Invalid credentials. Please check your email and password."
-                : signUpError.message || "Could not sign you in."
-            );
-            return;
-          }
-
-          if (signUpData.user) await ensureMemberProfile(signUpData.user);
-
-          // Session-aware: if email confirmation is ON, signUp returns no session,
-          // so navigating would bounce. Prompt to confirm instead.
-          if (signUpData.session) {
-            toast.success("✅ Account created successfully!");
-            loginForm.reset();
-            // Navigation (incl. any saved QR destination) is handled by the
-            // session effect above the instant the session is established.
-          } else {
-            toast.success("✅ Account created. Please confirm your email, then log in.");
-          }
+          toast.error("No account found, or the password is incorrect. Please sign up first if you’re new.");
           return;
         }
 
@@ -334,12 +309,23 @@ function MemberLoginPage() {
                     ) : (
                       <>
                         <LogIn className="mr-2 h-5 w-5" />
-                        Login / Sign Up
+                        Login
                         <ArrowRight className="ml-2 h-5 w-5 transition-transform group-hover:translate-x-1" />
                       </>
                     )}
                   </Button>
                 </form>
+
+                <p className="text-center text-sm text-muted-foreground">
+                  Don’t have an account?{" "}
+                  <button
+                    type="button"
+                    onClick={() => navigate({ to: "/signup" })}
+                    className="font-semibold text-primary underline-offset-4 hover:underline"
+                  >
+                    Sign up
+                  </button>
+                </p>
               </div>
 
               <p className="text-center text-xs text-muted-foreground">

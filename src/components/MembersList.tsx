@@ -37,8 +37,8 @@ import { BackButton } from "./BackButton";
 import { BulkOnboard } from "./BulkOnboard";
 import { supabase } from "@/supabase";
 import { QRCodeSVG } from "qrcode.react";
-import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
-import { isValidInternationalPhone, normalizeToE164Phone, phoneForWaMe } from "@/lib/phone";
+import { IndianMobileInput } from "@/components/IndianMobileInput";
+import { isValidIndianMobile, looksLikeIndianMobile, toIndianLocal, toIndianE164, phoneForWaMe } from "@/lib/phone";
 import { isApprovedPayment } from "@/lib/revenue";
 import { useAuth } from "@/lib/auth-context";
 
@@ -471,11 +471,11 @@ export function MembersList() {
       console.warn("Name is required");
       return;
     }
-    const normalizedPhone = normalizeToE164Phone(editForm.mobile_number, "+91");
-    if (!normalizedPhone || !isValidInternationalPhone(normalizedPhone)) {
-      console.warn("Phone number must be a valid international number");
+    if (!looksLikeIndianMobile(editForm.mobile_number)) {
+      console.warn("Phone number must be a valid 10-digit Indian mobile");
       return;
     }
+    const normalizedPhone = toIndianE164(editForm.mobile_number);
 
     try {
       setIsUpdating(true);
@@ -883,14 +883,13 @@ export function MembersList() {
                   </div>
 
                   <div className="space-y-2">
-                    <InternationalPhoneInput
+                    <IndianMobileInput
                       id="member-phone"
                       label="Phone Number"
-                      value={editForm.mobile_number}
+                      value={toIndianLocal(editForm.mobile_number)}
                       onChange={(value) => setEditForm(prev => ({ ...prev, mobile_number: value }))}
-                      placeholder="e.g. +919876543210"
-                      defaultCountryCode="+91"
-                      error={editForm.mobile_number && !isValidInternationalPhone(editForm.mobile_number) ? "Please enter a valid international phone number" : undefined}
+                      placeholder="9876543210"
+                      error={editForm.mobile_number && !looksLikeIndianMobile(editForm.mobile_number) ? "Enter a valid 10-digit Indian mobile number" : undefined}
                       className="group"
                       inputClassName="bg-slate-50 border-slate-200 rounded-xl text-slate-900"
                     />

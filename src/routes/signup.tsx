@@ -29,8 +29,8 @@ import { useAuth } from "@/lib/auth-context";
 import { toast } from "sonner";
 import { useState, useRef, useEffect } from "react";
 import { getDashboardPathForRole, resolveUserRole } from "@/lib/auth-role";
-import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
-import { INTERNATIONAL_PHONE_REGEX, cleanPhoneInput, normalizeToE164Phone } from "@/lib/phone";
+import { IndianMobileInput } from "@/components/IndianMobileInput";
+import { isValidIndianMobile, looksLikeIndianMobile, toIndianLocal, toIndianE164 } from "@/lib/phone";
 import { postAuthDestination } from "@/lib/auth-redirect";
 
 const signupSchema = z.object({
@@ -39,8 +39,7 @@ const signupSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
   mobile: z
     .string()
-    .transform((value) => cleanPhoneInput(value))
-    .refine((value) => INTERNATIONAL_PHONE_REGEX.test(value), "Please enter a valid international mobile number"),
+    .refine((value) => isValidIndianMobile(value), "Enter a valid 10-digit Indian mobile number"),
   password: z.string().min(6, "Password must be at least 6 characters"),
 });
 
@@ -118,6 +117,9 @@ function SignupPage() {
 
   const signupForm = useForm<SignupFormValues>({
     resolver: zodResolver(signupSchema),
+    // Live validation so the submit button can stay disabled until every field
+    // (incl. the 10-digit Indian mobile) is valid.
+    mode: "onChange",
     defaultValues: {
       gymName: "",
       city: "",
@@ -142,8 +144,7 @@ function SignupPage() {
   useEffect(() => {
     if (isLockedInvite && invitePhoneParam) {
       setActiveTab("signup");
-      const normalized = normalizeToE164Phone(invitePhoneParam, "+91") || invitePhoneParam;
-      signupForm.setValue("mobile", normalized, { shouldValidate: true });
+      signupForm.setValue("mobile", toIndianLocal(invitePhoneParam), { shouldValidate: true });
       // City is a gym-owner field; not relevant for an invited member. Set a
       // placeholder so the shared schema validates, and hide the field below.
       signupForm.setValue("city", "Member", { shouldValidate: true });
@@ -177,9 +178,10 @@ function SignupPage() {
         if (!newUserId) throw new Error("Failed to create auth user");
 
         // The phone is locked to the invite — never trust a client-changed value.
-        const lockedPhone = isLockedInvite && invitePhoneParam
-          ? (normalizeToE164Phone(invitePhoneParam, "+91") || invitePhoneParam)
-          : data.mobile;
+        // Stored canonically as +91 E.164.
+        const lockedPhone = toIndianE164(
+          isLockedInvite && invitePhoneParam ? invitePhoneParam : data.mobile,
+        );
 
         if (inviteToken) {
           // Claim the pending_signup slot the owner created in BulkOnboard:
@@ -326,7 +328,7 @@ function SignupPage() {
         gym_name: data.gymName,
         city: data.city,
         email: data.email,
-        mobile_number: data.mobile,
+        mobile_number: toIndianE164(data.mobile),
       };
 
       console.log("Sending data:", ownerProfilePayload);
@@ -358,8 +360,8 @@ function SignupPage() {
               gym_name: data.gymName,
               city: data.city,
               email: data.email,
-              phone: data.mobile,
-              mobile_number: data.mobile,
+              phone: toIndianE164(data.mobile),
+              mobile_number: toIndianE164(data.mobile),
             },
           ],
           { onConflict: "id" }
@@ -413,13 +415,16 @@ function SignupPage() {
     try {
       let loginEmail = data.identifier;
 
-      // Allow logging in with an international mobile number: look up the email.
-      const normalizedMobile = normalizeToE164Phone(data.identifier, "");
-      if (normalizedMobile) {
+      // Allow logging in with a 10-digit Indian mobile: look up the email.
+      // Match both the canonical +91 E.164 form and any legacy bare-10-digit
+      // storage so older rows still resolve.
+      if (looksLikeIndianMobile(data.identifier)) {
+        const local = toIndianLocal(data.identifier);
+        const e164 = toIndianE164(data.identifier);
         const { data: profile, error: profileError } = await supabase
           .from("gym_profiles")
           .select("email")
-          .or(`mobile_number.eq.${normalizedMobile},phone.eq.${normalizedMobile}`)
+          .or(`mobile_number.eq.${e164},phone.eq.${e164},mobile_number.eq.${local},phone.eq.${local}`)
           .abortSignal(authControllerRef.current.signal)
           .maybeSingle();
 
@@ -630,13 +635,12 @@ function SignupPage() {
                         control={signupForm.control}
                         name="mobile"
                         render={({ field }) => (
-                          <InternationalPhoneInput
+                          <IndianMobileInput
                             id="mobile"
                             label="Mobile Number"
                             value={field.value}
                             onChange={field.onChange}
-                            placeholder="e.g. +919876543210"
-                            defaultCountryCode="+91"
+                            placeholder="9876543210"
                             error={signupForm.formState.errors.mobile?.message}
                             className="group"
                             inputClassName="bg-white/5 border-white/10 focus:border-primary/50 focus:ring-primary/20"
@@ -667,10 +671,10 @@ function SignupPage() {
                       </div>
                     </div>
 
-                    <Button 
+                    <Button
                       type="submit"
-                      disabled={isLoading}
-                      className="w-full h-14 rounded-xl bg-gradient-brand text-primary-foreground font-bold text-lg shadow-glow hover:shadow-primary/40 hover:-translate-y-0.5 transition-all group disabled:opacity-70"
+                      disabled={isLoading || !signupForm.formState.isValid}
+                      className="w-full h-14 rounded-xl bg-gradient-brand text-primary-foreground font-bold text-lg shadow-glow hover:shadow-primary/40 hover:-translate-y-0.5 transition-all group disabled:opacity-70 disabled:cursor-not-allowed"
                     >
                       {isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : (
                         <>Create My Gym <ArrowRight className="ml-2 h-5 w-5 transition-transform group-hover:translate-x-1" /></>

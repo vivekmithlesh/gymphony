@@ -60,7 +60,7 @@ import { resolveSubscription, subscriptionHasFeature, nextTier, PLANS, formatINR
 import { PlanUsageMeter } from "@/components/PlanUsageMeter";
 import { UpgradeModal } from "@/components/UpgradeModal";
 import { isApprovedPayment } from "@/lib/revenue";
-import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
+import { IndianMobileInput } from "@/components/IndianMobileInput";
 import { MembersList } from "@/components/MembersList";
 
 import { FeatureGate } from "@/components/FeatureGate";
@@ -75,7 +75,7 @@ import { SettingsView } from "@/components/SettingsView";
 import { AttendanceView } from "@/components/AttendanceView";
 import { AmbientBackground } from "@/components/AmbientBackground";
 import { DashboardErrorBoundary } from "@/components/DashboardErrorBoundary";
-import { INTERNATIONAL_PHONE_REGEX, cleanPhoneInput, isValidInternationalPhone, normalizeToE164Phone, phoneForWaMe } from "@/lib/phone";
+import { isValidIndianMobile, looksLikeIndianMobile, toIndianE164, cleanPhoneInput, phoneForWaMe } from "@/lib/phone";
 import { debounce } from "@/lib/debounce";
 import { useAuth } from "@/lib/auth-context";
 import { 
@@ -1090,11 +1090,11 @@ function DashboardPage() {
       return;
     }
 
-    const normalizedMemberPhone = normalizeToE164Phone(newMemberPhone, "+91");
-    if (!normalizedMemberPhone || !isValidInternationalPhone(normalizedMemberPhone)) {
-      toast.error("Please enter a valid international phone number");
+    if (!looksLikeIndianMobile(newMemberPhone)) {
+      toast.error("Enter a valid 10-digit Indian mobile number");
       return;
     }
+    const normalizedMemberPhone = toIndianE164(newMemberPhone);
 
     // Enforce the real per-tier member cap (Starter 100 / Growth 500 / Pro ∞),
     // resolved from the live subscription — no hardcoded limit.
@@ -1220,11 +1220,11 @@ function DashboardPage() {
       return "";
     }
 
-    if (!INTERNATIONAL_PHONE_REGEX.test(cleaned)) {
+    if (!looksLikeIndianMobile(cleaned)) {
       return "";
     }
 
-    return cleaned;
+    return toIndianE164(cleaned);
   };
 
   const handleSendReminder = async (name: string, phone?: string, amount?: string, kind: 'dues' | 'renewal' = 'dues') => {
@@ -2409,14 +2409,13 @@ function DashboardPage() {
                     <Input value={newMemberName} onChange={(e) => setNewMemberName(e.target.value)} className="bg-slate-50 text-slate-900" />
                   </div>
                   <div className="space-y-2">
-                    <InternationalPhoneInput
+                    <IndianMobileInput
                       id="new-member-phone"
                       label="Phone Number"
                       value={newMemberPhone}
                       onChange={setNewMemberPhone}
-                      placeholder="e.g. +919876543210"
-                      defaultCountryCode="+91"
-                      error={newMemberPhone && !isValidInternationalPhone(newMemberPhone) ? "Please enter a valid international phone number" : undefined}
+                      placeholder="9876543210"
+                      error={newMemberPhone && !isValidIndianMobile(newMemberPhone) ? "Enter a valid 10-digit Indian mobile number" : undefined}
                       className="group"
                       inputClassName="bg-slate-50 text-slate-900 border-slate-200"
                     />

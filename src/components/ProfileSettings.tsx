@@ -22,8 +22,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { toast } from "sonner";
-import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
-import { isValidInternationalPhone, normalizeToE164Phone } from "@/lib/phone";
+import { IndianMobileInput } from "@/components/IndianMobileInput";
+import { isValidIndianMobile, toIndianLocal, toIndianE164 } from "@/lib/phone";
 
 interface ProfileSettingsProps {
   member: any;
@@ -59,7 +59,7 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
         if (data) {
           setMember((prev: any) => ({ ...prev, ...data }));
           setFullName(data.full_name || "");
-          setWhatsappNumber(data.mobile_number || data.whatsapp_number || "");
+          setWhatsappNumber(toIndianLocal(data.mobile_number || data.whatsapp_number || ""));
           setAvatarUrl(data.avatar_url || null);
         }
       } catch (err) {
@@ -76,7 +76,7 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
   useEffect(() => {
     if (initialMember && !isLoading) {
       setFullName(initialMember.full_name || "");
-      setWhatsappNumber(initialMember.mobile_number || initialMember.whatsapp_number || "");
+      setWhatsappNumber(toIndianLocal(initialMember.mobile_number || initialMember.whatsapp_number || ""));
       setAvatarUrl(initialMember.avatar_url || null);
     }
   }, [initialMember, isLoading]);
@@ -97,12 +97,11 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
 
     setIsUpdating(true);
     try {
-      const cleanPhone = normalizeToE164Phone(whatsappNumber, "+91");
-
-      if (!cleanPhone || !isValidInternationalPhone(cleanPhone)) {
-        toast.error("Please enter a valid international phone number");
+      if (!isValidIndianMobile(whatsappNumber)) {
+        toast.error("Enter a valid 10-digit Indian mobile number");
         return;
       }
+      const cleanPhone = toIndianE164(whatsappNumber);
       
       console.log("SYNCING PROFILE FOR USER:", user.id);
 
@@ -380,14 +379,13 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
                   </div>
                 </div>
                 <div className="space-y-3">
-                  <InternationalPhoneInput
+                  <IndianMobileInput
                     id="whatsapp-number"
                     label="WhatsApp Number"
                     value={whatsappNumber}
                     onChange={setWhatsappNumber}
-                    placeholder="e.g. +919876543210"
-                    defaultCountryCode="+91"
-                    error={whatsappNumber && !isValidInternationalPhone(whatsappNumber) ? "Please enter a valid international phone number" : undefined}
+                    placeholder="9876543210"
+                    error={whatsappNumber && !isValidIndianMobile(whatsappNumber) ? "Enter a valid 10-digit Indian mobile number" : undefined}
                     className="group"
                     inputClassName="bg-slate-50/50 border-slate-200 focus:border-primary focus:ring-primary/5 font-bold text-slate-900"
                   />
@@ -412,7 +410,7 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
               <div className="pt-4">
                 <Button
                   onClick={handleUpdateProfile}
-                  disabled={isUpdating || !isValidInternationalPhone(whatsappNumber) || !fullName.trim()}
+                  disabled={isUpdating || !isValidIndianMobile(whatsappNumber) || !fullName.trim()}
                   className="w-full h-16 rounded-[2rem] bg-gradient-brand text-white font-black text-lg shadow-glow hover:shadow-primary/40 transition-all disabled:opacity-50 disabled:grayscale"
                 >
                   {isUpdating ? (

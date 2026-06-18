@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { supabase } from "@/supabase";
-import { isValidInternationalPhone, normalizeToE164Phone, phoneForWaMe } from "@/lib/phone";
+import { looksLikeIndianMobile, toIndianE164, phoneForWaMe } from "@/lib/phone";
 
 interface ParsedRow {
   id: string;
@@ -219,15 +219,10 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
   const addRow = () =>
     setRows((prev) => [...prev, { id: rid(), name: "", phone: "", plan: "" }]);
 
-  const isRowValid = (r: ParsedRow) => {
-    const normalized = normalizeToE164Phone(r.phone, "+91");
-    return (
-      r.name.trim().length > 0 &&
-      !!normalized &&
-      isValidInternationalPhone(normalized) &&
-      r.plan.trim().length > 0 // owner must pick a real plan — no silent default
-    );
-  };
+  const isRowValid = (r: ParsedRow) =>
+    r.name.trim().length > 0 &&
+    looksLikeIndianMobile(r.phone) && // valid 10-digit Indian mobile (prefix tolerated)
+    r.plan.trim().length > 0; // owner must pick a real plan — no silent default
   const validRows = rows.filter(isRowValid);
   const invalidCount = rows.length - validRows.length;
 
@@ -322,7 +317,7 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
       expiry.setMonth(expiry.getMonth() + 1); // placeholder until they pick/pay a plan
 
       const payload = validRows.map((r) => {
-        const phoneE164 = normalizeToE164Phone(r.phone, "+91")!;
+        const phoneE164 = toIndianE164(r.phone);
         return {
           full_name: r.name.trim(),
           mobile_number: phoneE164,

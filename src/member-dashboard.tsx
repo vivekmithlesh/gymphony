@@ -46,8 +46,8 @@ import { CityLeaderboard } from "@/components/CityLeaderboard";
 const CityGymExplorer = lazy(() =>
   import("@/components/CityGymExplorer").then((m) => ({ default: m.CityGymExplorer }))
 );
-import { InternationalPhoneInput } from "@/components/InternationalPhoneInput";
-import { isValidInternationalPhone, normalizeToE164Phone } from "@/lib/phone";
+import { IndianMobileInput } from "@/components/IndianMobileInput";
+import { isValidIndianMobile, toIndianE164 } from "@/lib/phone";
 import { useRealtimeLeaderboard } from "@/hooks/useRealtimeLeaderboard";
 import { MemberUpiCheckout } from "@/components/MemberUpiCheckout";
 import { LegalLinksFooter } from "@/components/LegalLinksFooter";
@@ -243,11 +243,11 @@ export default function MemberDashboard() {
       toast.error("Please enter a valid mobile number");
       return;
     }
-    const cleanMobile = normalizeToE164Phone(mobileNumber, "+91");
-    if (!cleanMobile || !isValidInternationalPhone(cleanMobile)) {
-      toast.error("Invalid mobile number format");
+    if (!isValidIndianMobile(mobileNumber)) {
+      toast.error("Enter a valid 10-digit Indian mobile number");
       return;
     }
+    const cleanMobile = toIndianE164(mobileNumber);
     setIsUpdatingMobile(true);
     try {
       const { error: profileError } = await supabase
@@ -1216,12 +1216,12 @@ export default function MemberDashboard() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <InternationalPhoneInput
+            <IndianMobileInput
               id="mobile-prompt"
               label="Mobile Number"
               value={mobileNumber}
               onChange={setMobileNumber}
-              defaultCountryCode="+91"
+              placeholder="9876543210"
             />
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={handleSkipMobile}>Skip</Button>
