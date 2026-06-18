@@ -31,6 +31,8 @@ export interface SubscriptionPayment {
   utr: string | null;
   evidence_url: string | null;
   notes: string | null;
+  /** Name the owner entered for the UPI payment (who actually paid). */
+  payer_name: string | null;
   status: "pending_verification" | "approved" | "rejected" | string;
   reject_reason: string | null;
   reviewed_by: string | null;
@@ -69,6 +71,7 @@ export async function submitSubscriptionPayment(args: {
   tier: PlanTier;
   cycle: BillingCycle;
   utr: string;
+  payerName: string;
   evidenceUrl?: string | null;
   notes?: string | null;
 }): Promise<SubmitResult> {
@@ -78,6 +81,7 @@ export async function submitSubscriptionPayment(args: {
     p_utr: args.utr,
     p_evidence_url: args.evidenceUrl ?? null,
     p_notes: args.notes ?? null,
+    p_payer_name: args.payerName,
   });
   if (error) {
     const code = (error as { code?: string }).code;

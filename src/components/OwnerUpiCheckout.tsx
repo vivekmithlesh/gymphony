@@ -45,6 +45,7 @@ export function OwnerUpiCheckout({ open, onClose, tier, cycle, onSubmitted }: Ow
   const [upi, setUpi] = useState<PlatformUpi | null>(null);
   const [loadingUpi, setLoadingUpi] = useState(false);
   const [utr, setUtr] = useState("");
+  const [payerName, setPayerName] = useState("");
   const [notes, setNotes] = useState("");
   const [evidenceUrl, setEvidenceUrl] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -61,6 +62,7 @@ export function OwnerUpiCheckout({ open, onClose, tier, cycle, onSubmitted }: Ow
   useEffect(() => {
     if (!open) {
       setUtr("");
+      setPayerName("");
       setNotes("");
       setEvidenceUrl(null);
       setCopied(false);
@@ -128,12 +130,16 @@ export function OwnerUpiCheckout({ open, onClose, tier, cycle, onSubmitted }: Ow
 
   const handlePaid = async () => {
     if (!tier) return;
+    if (!payerName.trim()) {
+      toast.error("Enter the name used for the payment so we can verify it.");
+      return;
+    }
     if (!isValidUtr(utr)) {
       toast.error("Enter the UPI reference / UTR number from your payment app (12+ digits).");
       return;
     }
     setIsSubmitting(true);
-    const res = await submitSubscriptionPayment({ tier, cycle, utr: utr.trim(), evidenceUrl, notes });
+    const res = await submitSubscriptionPayment({ tier, cycle, utr: utr.trim(), payerName: payerName.trim(), evidenceUrl, notes });
     setIsSubmitting(false);
     if (!res.ok) {
       toast.error(res.error);
@@ -141,6 +147,7 @@ export function OwnerUpiCheckout({ open, onClose, tier, cycle, onSubmitted }: Ow
     }
     toast.success("Payment submitted! We'll verify and activate your plan shortly.");
     setUtr("");
+    setPayerName("");
     setNotes("");
     setEvidenceUrl(null);
     onSubmitted?.();
@@ -227,6 +234,16 @@ export function OwnerUpiCheckout({ open, onClose, tier, cycle, onSubmitted }: Ow
 
             <div className="w-full space-y-2 pt-1">
               <label className="text-xs font-semibold text-slate-700">
+                Name (as used for the payment) <span className="text-red-500">*</span>
+              </label>
+              <input
+                value={payerName}
+                onChange={(e) => setPayerName(e.target.value)}
+                placeholder="e.g. Rahul Sharma"
+                className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm font-medium text-slate-900 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-100"
+              />
+
+              <label className="text-xs font-semibold text-slate-700">
                 UPI reference / UTR number <span className="text-red-500">*</span>
               </label>
               <input
@@ -267,7 +284,7 @@ export function OwnerUpiCheckout({ open, onClose, tier, cycle, onSubmitted }: Ow
 
             <Button
               onClick={handlePaid}
-              disabled={isSubmitting || isUploading || !isValidUtr(utr)}
+              disabled={isSubmitting || isUploading || !payerName.trim() || !isValidUtr(utr)}
               className="mt-2 h-12 w-full rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 font-bold text-white hover:from-violet-500 hover:to-fuchsia-500"
             >
               {isSubmitting ? (

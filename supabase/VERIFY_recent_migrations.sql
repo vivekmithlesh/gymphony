@@ -86,6 +86,9 @@ with checks(migration, object, present) as (
   union all select '20260630_manual_upi_subscriptions_v2', 'col subscription_payments.notes',
          exists(select 1 from information_schema.columns
                 where table_schema='public' and table_name='subscription_payments' and column_name='notes')
+  union all select '20260630_manual_upi_subscriptions_v2', 'col subscription_payments.payer_name',
+         exists(select 1 from information_schema.columns
+                where table_schema='public' and table_name='subscription_payments' and column_name='payer_name')
   union all select '20260630_manual_upi_subscriptions_v2', 'fn app_admin_list_subscriptions',
          exists(select 1 from pg_proc where proname = 'app_admin_list_subscriptions')
   union all select '20260630_manual_upi_subscriptions_v2', 'config platform_upi_qr_url',

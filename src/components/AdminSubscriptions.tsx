@@ -97,7 +97,10 @@ export function AdminSubscriptions() {
                   return (
                     <tr key={r.id} className="border-b border-slate-50 align-top">
                       <td className="py-3 pr-3 font-semibold text-slate-900">{r.gym_name || "—"}</td>
-                      <td className="py-3 pr-3 break-all text-muted-foreground">{r.owner_email || `${r.owner_id.slice(0, 8)}…`}</td>
+                      <td className="py-3 pr-3">
+                        {r.payer_name && <p className="font-semibold text-slate-800">{r.payer_name}</p>}
+                        <p className="break-all text-muted-foreground">{r.owner_email || `${r.owner_id.slice(0, 8)}…`}</p>
+                      </td>
                       <td className="py-3 pr-3 capitalize text-slate-700">{r.tier} · {r.billing_cycle}</td>
                       <td className="py-3 pr-3 font-bold text-slate-900">{formatINR(Number(r.amount))}</td>
                       <td className="py-3 pr-3">
@@ -150,6 +153,7 @@ export function AdminSubscriptions() {
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="font-bold text-slate-900">{r.gym_name || "—"}</p>
+                    {r.payer_name && <p className="text-xs font-semibold text-slate-700">Paid by {r.payer_name}</p>}
                     <p className="break-all text-xs text-muted-foreground">{r.owner_email || `${r.owner_id.slice(0, 8)}…`}</p>
                   </div>
                   <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${badge.cls}`}>

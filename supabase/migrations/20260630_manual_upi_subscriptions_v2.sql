@@ -2,13 +2,14 @@
 -- 20260630 — Manual-UPI owner subscriptions, v2 (completes 20260629).
 -- -----------------------------------------------------------------------------
 -- Forward, idempotent additions on top of 20260629_manual_upi_subscriptions:
---   1. subscription_payments.notes (optional free-text the owner submits).
+--   1. subscription_payments.notes + .payer_name (optional free-text the owner
+--      submits; payer_name = who actually paid, for the admin to cross-check).
 --   2. Platform config: uploaded QR image + support WhatsApp + support email.
 --   3. get_platform_upi() returns the new fields.
 --   4. app_set_platform_upi() takes qr_url / whatsapp / email (signature change
 --      → drop the old 3-arg version first).
---   5. app_submit_subscription_payment() takes p_notes (signature change → drop
---      the old 4-arg version first).
+--   5. app_submit_subscription_payment() takes p_notes + p_payer_name (signature
+--      changed → drop the older versions first; safe to re-run).
 --   6. app_review_subscription_payment() now notifies the owner (activity_log)
 --      on BOTH approve and reject, in addition to the existing audit trail.
 --   7. app_admin_list_subscriptions() — admin-gated enriched list (joins
@@ -21,9 +22,13 @@
 
 begin;
 
--- 1. Optional notes the owner can attach to a payment request. -----------------
+-- 1. Optional notes + payer name the owner attaches to a payment request. ------
+--    payer_name = the name on the UPI payment (helps the admin match a UTR to a
+--    person when the paying account differs from the gym's registered owner).
 alter table public.subscription_payments
   add column if not exists notes text;
+alter table public.subscription_payments
+  add column if not exists payer_name text;
 
 -- 2. Platform QR image + support contacts (RLS-locked app_config). -------------
 insert into public.app_config (key, value) values
@@ -86,14 +91,18 @@ end;
 $$;
 grant execute on function public.app_set_platform_upi(text, text, text, text, text, text) to authenticated;
 
--- 5. app_submit_subscription_payment — now records optional notes. -------------
+-- 5. app_submit_subscription_payment — records optional notes + payer name. ----
+--    Drop BOTH older signatures (4-arg from 20260629, 5-arg from an earlier run
+--    of this file) so re-applying never leaves an ambiguous overload.
 drop function if exists public.app_submit_subscription_payment(text, text, text, text);
+drop function if exists public.app_submit_subscription_payment(text, text, text, text, text);
 create or replace function public.app_submit_subscription_payment(
   p_tier         text,
   p_cycle        text default 'monthly',
   p_utr          text default null,
   p_evidence_url text default null,
-  p_notes        text default null
+  p_notes        text default null,
+  p_payer_name   text default null
 )
 returns uuid
 language plpgsql
@@ -127,15 +136,18 @@ begin
   select id into v_gym from public.gym_settings where gym_owner_id = v_owner limit 1;
 
   insert into public.subscription_payments
-    (owner_id, gym_id, tier, billing_cycle, amount, utr, evidence_url, notes, status)
+    (owner_id, gym_id, tier, billing_cycle, amount, utr, evidence_url, notes, payer_name, status)
   values
-    (v_owner, v_gym, v_tier, v_cycle, v_amount, btrim(p_utr), p_evidence_url, nullif(btrim(coalesce(p_notes, '')), ''), 'pending_verification')
+    (v_owner, v_gym, v_tier, v_cycle, v_amount, btrim(p_utr), p_evidence_url,
+     nullif(btrim(coalesce(p_notes, '')), ''),
+     nullif(btrim(coalesce(p_payer_name, '')), ''),
+     'pending_verification')
   returning id into v_id;
 
   return v_id;
 end;
 $$;
-grant execute on function public.app_submit_subscription_payment(text, text, text, text, text) to authenticated;
+grant execute on function public.app_submit_subscription_payment(text, text, text, text, text, text) to authenticated;
 
 -- 6. app_review_subscription_payment — approve activates + notifies; reject
 --    notifies with the reason. Duplicate-approval guarded by the status check
@@ -224,7 +236,10 @@ grant execute on function public.app_review_subscription_payment(uuid, text, tex
 -- 7. Admin-enriched list — joins gym_settings for the Gym + Owner the dashboard
 --    shows. Admin-gated (non-admins get an empty set); the base table's RLS
 --    already blocks owners from reading anyone else's gym row.
-create or replace function public.app_admin_list_subscriptions(p_limit int default 200)
+-- Drop first: adding payer_name changes the return shape, which CREATE OR
+-- REPLACE cannot do. Safe to re-run.
+drop function if exists public.app_admin_list_subscriptions(int);
+create function public.app_admin_list_subscriptions(p_limit int default 200)
 returns table (
   id            uuid,
   owner_id      uuid,
@@ -235,6 +250,7 @@ returns table (
   utr           text,
   evidence_url  text,
   notes         text,
+  payer_name    text,
   status        text,
   reject_reason text,
   reviewed_by   uuid,
@@ -249,7 +265,7 @@ security definer
 set search_path = public
 as $$
   select sp.id, sp.owner_id, sp.gym_id, sp.tier, sp.billing_cycle, sp.amount,
-         sp.utr, sp.evidence_url, sp.notes, sp.status, sp.reject_reason,
+         sp.utr, sp.evidence_url, sp.notes, sp.payer_name, sp.status, sp.reject_reason,
          sp.reviewed_by, sp.reviewed_at, sp.created_at,
          coalesce(gs.gym_name, '')    as gym_name,
          coalesce(gs.owner_email, '') as owner_email
