@@ -141,8 +141,21 @@ export default function MemberDashboard() {
   // Reset the scroll container to top on tab change — tabs are state, not routes,
   // so the main pane would otherwise keep its prior scroll position.
   const mainScrollRef = useRef<HTMLElement>(null);
+  // <main> is a custom overflow-y-auto scroll container (the page wrapper is
+  // h-screen/overflow-hidden so the window itself never scrolls). On a hard
+  // refresh or back-nav the browser/SSR could re-apply a previous scroll position
+  // AFTER React mounts — which looked like the dashboard "auto-scrolling down".
+  // Take manual control of restoration so nothing scrolls us unexpectedly.
   useEffect(() => {
-    mainScrollRef.current?.scrollTo({ top: 0 });
+    if (typeof window !== "undefined" && "scrollRestoration" in window.history) {
+      window.history.scrollRestoration = "manual";
+    }
+  }, []);
+  // Pin to the top on load and on tab change — after paint (rAF) so our reset
+  // wins over any late scroll restoration.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => mainScrollRef.current?.scrollTo({ top: 0 }));
+    return () => cancelAnimationFrame(raf);
   }, [activeTab]);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -647,15 +660,32 @@ export default function MemberDashboard() {
     if (!member?.id) return;
     setIsSavingGymId(true);
     try {
-      await supabase.from("profiles").upsert({ id: member.id, gym_id: gymId, full_name: member.full_name || "Member" }, { onConflict: 'id' });
-      const { data: gymData } = await supabase.from("gym_settings").select("gym_owner_id").eq("id", gymId).maybeSingle();
-      await supabase.from("members").upsert({ id: member.id, gym_id: gymId, gym_owner_id: gymData?.gym_owner_id || null, full_name: member.full_name || "Member", email: member.email }, { onConflict: 'id' });
+      // Persist the gym link on the member's OWN profile — the source of truth the
+      // dashboard reads on reload. Use UPDATE (not upsert): the row already exists
+      // and members have a self-update policy, whereas upsert's INSERT arm was
+      // rejected by RLS and silently swallowed, so the join never actually saved
+      // (dashboard unlocked optimistically, then reverted to "Join a Gym" on
+      // refresh). .select() confirms the write landed before we proceed.
+      const { data, error: joinErr } = await supabase
+        .from("profiles")
+        .update({ gym_id: gymId })
+        .eq("id", member.id)
+        .select("gym_id")
+        .maybeSingle();
+      if (joinErr) throw joinErr;
+      if (!data?.gym_id) throw new Error("Could not save your gym. Please try again.");
+
       setMember((prev) => prev ? ({ ...prev, gym_id: gymId }) : null);
       await refreshGymContext(gymId, member.id);
       setSearchQuery(""); setSearchResults([]);
       toast.success("Welcome to the Family!");
       setTimeout(() => setShowPlansModal(true), 500);
-    } catch (err: any) { toast.error("Failed to join gym."); } finally { setIsSavingGymId(false); }
+    } catch (err: any) {
+      console.error("join gym failed:", err);
+      toast.error(err?.message || "Failed to join gym. Please try again.");
+    } finally {
+      setIsSavingGymId(false);
+    }
   };
 
   const handleLogout = async () => {

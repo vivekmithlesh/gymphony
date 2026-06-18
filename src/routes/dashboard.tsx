@@ -190,8 +190,21 @@ function DashboardPage() {
   // whenever the active tab changes. (TanStack <ScrollRestoration/> wouldn't fire
   // here — there's no route change.)
   const mainScrollRef = useRef<HTMLElement>(null);
+  // <main> is a custom overflow-y-auto scroll container (the page wrapper is
+  // h-screen/overflow-hidden so the window itself never scrolls). On a hard
+  // refresh or back-nav the browser/SSR could re-apply a previous scroll position
+  // AFTER React mounts — which looked like the dashboard "auto-scrolling down".
+  // Take manual control of restoration so nothing scrolls us unexpectedly.
   useEffect(() => {
-    mainScrollRef.current?.scrollTo({ top: 0 });
+    if (typeof window !== "undefined" && "scrollRestoration" in window.history) {
+      window.history.scrollRestoration = "manual";
+    }
+  }, []);
+  // Pin to the top on load and on tab change — after paint (rAF) so our reset
+  // wins over any late scroll restoration.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => mainScrollRef.current?.scrollTo({ top: 0 }));
+    return () => cancelAnimationFrame(raf);
   }, [activeTab]);
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [addMemberTab, setAddMemberTab] = useState("Manual Entry");
