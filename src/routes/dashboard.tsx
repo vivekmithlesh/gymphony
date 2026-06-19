@@ -225,21 +225,26 @@ function DashboardPage() {
 
       setIsFetchingMemberToLink(true);
       try {
-        // Match the right column: a full UUID hits id, anything else hits short_id.
-        // (Comparing the uuid column against a non-UUID literal errors in Postgres.)
-        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-          memberIdToLink.trim()
-        );
-        const lookup = supabase
-          .from("profiles")
-          .select("id, full_name, avatar_url, short_id");
-        const { data, error } = await (isUuid
-          ? lookup.eq("id", memberIdToLink.trim())
-          : lookup.eq("short_id", memberIdToLink.trim())
-        ).maybeSingle();
-
+        // Resolve the member through the SECURITY DEFINER resolver, NOT a direct
+        // `profiles` query: an owner can't read a not-yet-joined member's row
+        // under RLS, so the old client-side select returned null and this preview
+        // never appeared. The RPC accepts a full UUID (profiles.id) or a short_id.
+        const { data, error } = await supabase.rpc("lookup_member_for_link", {
+          p_ref: memberIdToLink.trim(),
+        });
         if (error) throw error;
-        setMemberDetailsToLink(data);
+        const res = (data ?? {}) as {
+          found?: boolean;
+          id?: string;
+          full_name?: string;
+          avatar_url?: string | null;
+          short_id?: string;
+        };
+        setMemberDetailsToLink(
+          res.found
+            ? { id: res.id, full_name: res.full_name, avatar_url: res.avatar_url, short_id: res.short_id }
+            : null,
+        );
       } catch (err) {
         console.warn("Member fetch error:", err);
         setMemberDetailsToLink(null);
@@ -1331,9 +1336,11 @@ function DashboardPage() {
         // legacy {member_id} JSON, or as a bare UUID) — never the short_id. Use
         // the shared validator to pull the real id out of whichever format it is.
         const parsed = QRValidator.parse(decodedText);
+        // 🔍 Temporary debug logging — raw scan + how it classified.
+        console.log("[AddMember] Scanned QR:", decodedText, "→ parsed:", parsed);
         if (parsed.type !== QR_TYPES.MEMBER_PASS || !parsed.memberId) {
           // Stable id so a non-member QR held in frame updates one toast, not many.
-          toast.error("That's not a member pass QR code.", { id: "member-scan-invalid" });
+          toast.error("Invalid QR Format — that's not a member pass.", { id: "member-scan-invalid" });
           return;
         }
 
@@ -1345,7 +1352,7 @@ function DashboardPage() {
           memberQRScannerRef.current = null;
         }
 
-        // Link member to gym
+        // Resolve + link the member server-side (UUID extracted from the pass).
         await handleLinkMemberToGym(parsed.memberId);
       } catch (error) {
         console.error("QR scan error:", error);
@@ -1368,77 +1375,85 @@ function DashboardPage() {
     }
   }, [showMemberQRScanner]);
 
-  // ✅ NEW: Link member to gym by updating profiles table
-  const handleLinkMemberToGym = async (memberId: string) => {
-    if (!gymSettings?.id) {
-      toast.error("Gym profile not found. Please complete your gym setup first.");
+  // Link a member to this gym via the SECURITY DEFINER `link_member_to_gym` RPC.
+  // `ref` is the member's full UUID (from a scanned pass — profiles.id == the
+  // pass's `mid`) OR a typed short_id; the RPC resolves both. We deliberately do
+  // NOT touch `profiles` directly here: an owner can't read/update another user's
+  // row under RLS (that was the "Member Not Found" root cause), exactly like the
+  // kiosk check-in, which is why that flow always worked and this one didn't.
+  const handleLinkMemberToGym = async (ref: string) => {
+    const memberRef = (ref || "").trim();
+
+    // 🔍 Temporary debug logging — verify the QR/ID payload reaching the lookup.
+    console.log("[AddMember] QR Data:", memberRef);
+
+    if (!memberRef) {
+      toast.error("Invalid QR Format — no member ID found.");
+      setIsScanningMember(false);
       return;
     }
 
     setIsLinkingMember(true);
-
     try {
-      // 1. Resolve the member in 'profiles'. A scanned QR gives the member's full
-      // UUID, while the "Add by ID" tab gives a short_id (6B1F3D9B style) — match
-      // the right column so both paths work (querying id with a non-UUID errors).
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-        (memberId || "").trim()
-      );
-      const lookup = supabase.from("profiles").select("id, full_name, short_id");
-      const { data: profileData, error: profileError } = await (isUuid
-        ? lookup.eq("id", memberId.trim())
-        : lookup.eq("short_id", memberId.trim())
-      ).maybeSingle();
+      const { data, error } = await supabase.rpc("link_member_to_gym", { p_ref: memberRef });
+      const res = (data ?? {}) as {
+        success?: boolean;
+        code?: string;
+        member_name?: string;
+        lookup?: string;
+        error?: string;
+      };
 
-      if (profileError || !profileData) {
-        toast.error("Member with this ID not found. Please check the ID.");
-        setIsLinkingMember(false);
+      // 🔍 Temporary debug logging — matched member + which column resolved it.
+      console.log("[AddMember] Matched Member:", res);
+      console.log("[AddMember] Lookup Method:", res.lookup ?? (error ? "rpc_error" : "unknown"));
+
+      if (error) {
+        // Most likely the 20260704 migration isn't applied to this database yet.
+        console.error("link_member_to_gym RPC error:", error);
+        toast.error("Couldn't add member. Please update the app / try again.");
         return;
       }
 
-      const actualMemberId = profileData.id;
+      // Light haptic feedback on phones (no-op on desktop / unsupported).
+      const buzz = (pattern: number | number[]) => {
+        if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(pattern);
+      };
 
-      // 2. Update profiles table with owner's gym_id
-      const { error: updateError } = await supabase
-        .from("profiles")
-        .update({ gym_id: gymSettings.id })
-        .eq("id", actualMemberId);
-
-      if (updateError) throw updateError;
-
-      // 3. Also update members table gym_id and gym_owner_id for consistency
-      const { error: memberUpdateError } = await supabase
-        .from("members")
-        .update({ 
-          gym_id: gymSettings.id,
-          gym_owner_id: currentUserId 
-        })
-        .eq("id", actualMemberId);
-
-      if (memberUpdateError) {
-        console.warn("Could not update members table:", memberUpdateError);
+      if (res.success) {
+        buzz(40);
+        toast.success(`✅ ${res.member_name || "Member"} added to your gym!`);
+        setShowMemberQRScanner(false);
+        setMemberIdToLink("");
+        setMemberDetailsToLink(null);
+        setAddMemberTab("Manual Entry");
+        setIsAddMemberOpen(false);
+        fetchMembersCounts();
+        fetchRecentActivities();
+        return;
       }
 
-      // 4. Log activity
-      if (currentUserId) {
-        await supabase.from("activity_log").insert([{
-          gym_owner_id: currentUserId,
-          member_id: actualMemberId,
-          activity_type: "member_joined",
-          description: `${profileData.full_name} joined your gym via short_id link.`,
-          is_read: false
-        }]);
+      // Specific, actionable failures instead of a blanket "Member Not Found".
+      buzz([60, 40, 60]);
+      switch (res.code) {
+        case "already_added":
+          toast.error(res.error || `${res.member_name || "This member"} is already in your gym.`);
+          break;
+        case "other_gym":
+          toast.error("This member belongs to another gym.");
+          break;
+        case "not_found":
+          toast.error("Member does not exist — check the QR / ID and try again.");
+          break;
+        case "no_gym":
+          toast.error("Finish your gym setup before adding members.");
+          break;
+        case "invalid_ref":
+          toast.error("Invalid QR Format — that's not a member pass.");
+          break;
+        default:
+          toast.error(res.error || "Could not add member. Please try again.");
       }
-
-      toast.success(`✅ ${profileData.full_name} Linked Successfully!`);
-      setShowMemberQRScanner(false);
-      setMemberIdToLink("");
-      setMemberDetailsToLink(null);
-      setAddMemberTab("Manual Entry");
-      
-      // Refresh stats
-      fetchMembersCounts();
-      fetchRecentActivities();
     } catch (error) {
       console.error("Unexpected error linking member:", error);
       toast.error("Linking failed. Please try again.");
