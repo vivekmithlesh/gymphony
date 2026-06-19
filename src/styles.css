@@ -227,3 +227,62 @@
 
 /* Leaflet maps use the stock default blue pin (see src/lib/leafletDefaultIcon.ts);
    the old custom marker CSS lived here and was removed with the map revert. */
+
+/* ── html5-qrcode widget contrast ──────────────────────────────────────────
+   Html5QrcodeScanner injects its own "Request Camera Permissions" button,
+   "Scan an Image File" link, camera <select> and status text. Tailwind's
+   preflight strips the library's default button/link colours, so those controls
+   inherit the surrounding text colour and can vanish.
+
+   The two scanners that use this widget live on DELIBERATELY fixed (not
+   theme-following) surfaces, so the readable colour is the surface's opposite —
+   scoped per container rather than to the app theme (which is why a single
+   global colour made one scanner unreadable):
+     • #reader            → dark check-in modal  (bg-slate-900) → light controls
+     • #member-qr-reader  → light Add-Member card (bg-white)    → dark controls
+   The light surface uses brand tokens (--primary-deep) so it stays on-brand and
+   meets contrast. Headless Html5Qrcode scanners render none of these controls,
+   so they're untouched. Unlayered so it outranks Tailwind's @layer base. */
+.html5-qrcode-element {
+  padding: 0.55rem 1rem;
+  border-radius: 0.75rem;
+  border: 1px solid transparent;
+  font-weight: 600;
+  cursor: pointer;
+}
+#html5-qrcode-anchor-scan-type-change {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Dark surface — check-in scanner (#reader). */
+#reader .html5-qrcode-element {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+#reader select.html5-qrcode-element {
+  background: #0f172a;
+}
+#reader #html5-qrcode-anchor-scan-type-change,
+#reader [id$="__header_message"] {
+  color: #f1f5f9;
+}
+
+/* Light surface — Add-Member scanner (#member-qr-reader). */
+#member-qr-reader .html5-qrcode-element {
+  background: color-mix(in oklab, var(--primary) 12%, white);
+  border-color: color-mix(in oklab, var(--primary) 30%, white);
+  color: var(--primary-deep);
+}
+#member-qr-reader select.html5-qrcode-element {
+  background: #ffffff;
+  color: #1e293b;
+}
+#member-qr-reader #html5-qrcode-anchor-scan-type-change {
+  color: var(--primary-deep);
+}
+#member-qr-reader [id$="__header_message"] {
+  color: #475569;
+}
