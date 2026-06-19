@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { ArrowRight, PlayCircle, Sparkles, ShieldCheck } from "lucide-react";
-import dashboard from "@/assets/dashboard-hero.png";
+import dashboard from "@/assets/revenue-hero.png";
 import { Link } from "@tanstack/react-router";
 
 const proofStats = [
@@ -100,9 +100,9 @@ export function Hero() {
           <div className="relative animate-float rounded-3xl">
             <img
               src={dashboard}
-              alt="Gymphony owner dashboard showing revenue, live check-ins and at-risk members"
-              width={1280}
-              height={960}
+              alt="Gymphony revenue analytics dashboard shown on a laptop"
+              width={1264}
+              height={842}
               className="w-full drop-shadow-2xl"
             />
           </div>

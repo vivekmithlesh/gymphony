@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import screens from "@/assets/app-screens.png";
+import screens from "@/assets/app-screens-v2.png";
 
 const labels = ["Live revenue", "At-risk members", "Payments & dues", "QR attendance"];
 
@@ -34,8 +34,8 @@ export function AppPreview() {
               src={screens}
               alt="Gymphony mobile app screens"
               loading="lazy"
-              width={1600}
-              height={1100}
+              width={740}
+              height={357}
               className="w-full"
             />
           </div>
