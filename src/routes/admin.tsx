@@ -4,6 +4,8 @@ import { Footer } from "@/components/Footer";
 import { AdminRoute } from "@/components/AdminRoute";
 import { AdminUpiConfig } from "@/components/AdminUpiConfig";
 import { AdminSubscriptions } from "@/components/AdminSubscriptions";
+import { AdminPayoneerConfig } from "@/components/AdminPayoneerConfig";
+import { AdminIntlPayments } from "@/components/AdminIntlPayments";
 
 export const Route = createFileRoute("/admin")({
   head: () => ({
@@ -27,6 +29,8 @@ function AdminPage() {
           </div>
           <AdminUpiConfig />
           <AdminSubscriptions />
+          <AdminPayoneerConfig />
+          <AdminIntlPayments />
         </main>
         <Footer />
       </div>

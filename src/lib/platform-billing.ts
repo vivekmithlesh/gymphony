@@ -159,3 +159,173 @@ export async function setPlatformUpi(args: {
   });
   if (error) throw error;
 }
+
+// =============================================================================
+// International (Payoneer) owner subscriptions — manual verification, isolated
+// from the UPI flow above. Amounts are computed SERVER-SIDE (migration 20260705);
+// the client only ever sends { tier, country, cycle }. Activation happens only on
+// admin approval, via the same locked-down gym_settings write the UPI flow uses.
+// =============================================================================
+
+export interface PlatformPayoneer {
+  email: string;
+  account: string;
+  note: string;
+  support_whatsapp: string;
+  support_email: string;
+}
+
+export interface IntlPayment {
+  id: string;
+  owner_id: string;
+  gym_id: string | null;
+  plan_tier: string;
+  billing_cycle: string;
+  country: string;
+  country_tier: number;
+  currency: string;
+  amount: number;
+  gateway: string;
+  payment_reference_id: string;
+  user_submitted_reference: string | null;
+  payment_proof_url: string | null;
+  notes: string | null;
+  payer_name: string | null;
+  status: "pending" | "submitted" | "approved" | "rejected" | string;
+  reject_reason: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  approved_at: string | null;
+  approved_by: string | null;
+  created_at: string;
+  /** Present only on the admin-enriched list (app_admin_list_intl_payments). */
+  gym_name?: string;
+  owner_email?: string;
+}
+
+export interface CreatedIntlPayment {
+  id: string;
+  payment_reference_id: string;
+  amount: number;
+  currency: string;
+  tier: string;
+  country: string;
+  country_tier: number;
+  cycle: string;
+}
+
+const EMPTY_PAYONEER: PlatformPayoneer = {
+  email: "", account: "", note: "", support_whatsapp: "", support_email: "",
+};
+
+/** The platform's Payoneer payee details (where intl owners send subscription payments). */
+export async function getPlatformPayoneer(): Promise<PlatformPayoneer> {
+  const { data, error } = await supabase.rpc("get_platform_payoneer");
+  if (error || !data) return { ...EMPTY_PAYONEER };
+  const d = data as Partial<PlatformPayoneer>;
+  return {
+    email: d.email || "",
+    account: d.account || "",
+    note: d.note || "",
+    support_whatsapp: d.support_whatsapp || "",
+    support_email: d.support_email || "",
+  };
+}
+
+/** Admin: update the platform Payoneer payee details + support contacts. */
+export async function setPlatformPayoneer(args: {
+  email: string;
+  account: string;
+  note?: string | null;
+  whatsapp?: string | null;
+  supportEmail?: string | null;
+}): Promise<void> {
+  const { error } = await supabase.rpc("app_set_platform_payoneer", {
+    p_email: args.email,
+    p_account: args.account,
+    p_note: args.note ?? null,
+    p_whatsapp: args.whatsapp ?? null,
+    p_support_email: args.supportEmail ?? null,
+  });
+  if (error) throw error;
+}
+
+/**
+ * Create (or reuse) a pending international payment. The server computes the
+ * amount from the country tier; the returned reference ID is shown to the owner.
+ */
+export async function createIntlPayment(args: {
+  tier: PlanTier;
+  country: string;
+  cycle: BillingCycle;
+}): Promise<CreatedIntlPayment> {
+  const { data, error } = await supabase.rpc("app_create_intl_payment", {
+    p_tier: args.tier,
+    p_country: args.country,
+    p_cycle: args.cycle,
+  });
+  if (error) throw error;
+  return data as CreatedIntlPayment;
+}
+
+export type SubmitIntlResult =
+  | { ok: true; id: string }
+  | { ok: false; error: string; duplicate?: boolean };
+
+/** Owner: attach the Payoneer reference (+ optional proof) → status 'submitted'. */
+export async function submitIntlReference(args: {
+  id: string;
+  reference: string;
+  proofUrl?: string | null;
+  notes?: string | null;
+  payerName?: string | null;
+}): Promise<SubmitIntlResult> {
+  const { data, error } = await supabase.rpc("app_submit_intl_reference", {
+    p_id: args.id,
+    p_reference: args.reference,
+    p_proof_url: args.proofUrl ?? null,
+    p_notes: args.notes ?? null,
+    p_payer_name: args.payerName ?? null,
+  });
+  if (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "23505") return { ok: false, error: "This payment reference has already been submitted.", duplicate: true };
+    return { ok: false, error: error.message || "Could not submit your payment." };
+  }
+  const res = (data ?? {}) as { success?: boolean; error?: string; id?: string };
+  if (!res.success) return { ok: false, error: res.error || "Could not submit your payment." };
+  return { ok: true, id: res.id ?? args.id };
+}
+
+/** Admin: approve (activates the plan) or reject a submitted intl payment. */
+export async function reviewIntlPayment(
+  id: string,
+  action: "approve" | "reject",
+  reason?: string,
+): Promise<{ success: boolean; error?: string; status?: string }> {
+  const { data, error } = await supabase.rpc("app_review_intl_payment", {
+    p_id: id,
+    p_action: action,
+    p_reason: reason ?? null,
+  });
+  if (error) throw error;
+  return (data ?? { success: false }) as { success: boolean; error?: string; status?: string };
+}
+
+/** Admin: full international payment history enriched with Gym name + Owner email. */
+export async function fetchAdminIntlPayments(limit = 200): Promise<IntlPayment[]> {
+  const { data, error } = await supabase.rpc("app_admin_list_intl_payments", { p_limit: limit });
+  if (error) throw error;
+  return (data ?? []) as IntlPayment[];
+}
+
+/** Owner: this owner's international payment history. */
+export async function fetchMyIntlPayments(ownerId: string): Promise<IntlPayment[]> {
+  const { data, error } = await supabase
+    .from("international_payments")
+    .select("*")
+    .eq("owner_id", ownerId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as IntlPayment[];
+}
