@@ -2,10 +2,12 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { Check, Sparkles } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { PLAN_LIST, formatINR, TRIAL_DAYS, isComingSoonHighlight, type BillingCycle } from "@/lib/plans";
+import { PLAN_LIST, TRIAL_DAYS, isComingSoonHighlight, type BillingCycle } from "@/lib/plans";
+import { COUNTRIES, priceView } from "@/lib/intl-pricing";
 
 export function Pricing() {
   const [cycle, setCycle] = useState<BillingCycle>("monthly");
+  const [country, setCountry] = useState<string>("IN");
 
   return (
     <section id="pricing" className="relative py-24 md:py-32">
@@ -45,11 +47,29 @@ export function Pricing() {
               </span>
             </button>
           </div>
+
+          {/* Billing country selector — India shows INR, other countries USD. */}
+          <div className="mt-6 flex flex-col items-center gap-2">
+            <div className="flex items-center gap-2">
+              <label htmlFor="pricing-country" className="text-sm font-semibold text-muted-foreground">Billing country</label>
+              <select
+                id="pricing-country"
+                value={country}
+                onChange={(e) => setCountry(e.target.value)}
+                className="h-10 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground focus:border-primary focus:outline-none"
+              >
+                {COUNTRIES.map((c) => (
+                  <option key={c.code} value={c.code}>{c.flag} {c.name}</option>
+                ))}
+              </select>
+            </div>
+            <p className="text-xs text-muted-foreground">Pricing is adjusted based on your billing country.</p>
+          </div>
         </div>
 
         <div className="mx-auto mt-16 grid max-w-6xl items-start gap-6 lg:grid-cols-3">
           {PLAN_LIST.map((p, i) => {
-            const perMonth = cycle === "yearly" ? p.priceYearlyPerMonth : p.priceMonthly;
+            const pv = priceView(country, p.id, cycle);
             return (
               <motion.div
                 key={p.id}
@@ -81,7 +101,7 @@ export function Pricing() {
 
                   <div className="mt-5 flex items-baseline gap-2">
                     <span className="font-display text-5xl font-bold tracking-tight">
-                      {formatINR(perMonth)}
+                      {pv.perMonthLabel}
                     </span>
                     <span className={p.popular ? "text-surface-foreground/70" : "text-muted-foreground"}>
                       / month
@@ -89,7 +109,7 @@ export function Pricing() {
                   </div>
                   <p className={`mt-1 text-xs font-medium ${p.popular ? "text-surface-foreground/60" : "text-muted-foreground"}`}>
                     {cycle === "yearly"
-                      ? `${formatINR(p.priceYearlyTotal)} billed yearly`
+                      ? `${pv.totalLabel} billed yearly`
                       : `${TRIAL_DAYS}-day free trial included`}
                   </p>
 

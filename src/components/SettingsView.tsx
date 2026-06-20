@@ -46,18 +46,20 @@ import { toast } from "sonner";
 import { supabase } from "@/supabase";
 import { useAuth } from "@/lib/auth-context";
 import { OwnerUpiCheckout } from "@/components/OwnerUpiCheckout";
+import { PayoneerCheckout } from "@/components/PayoneerCheckout";
 import { SubscriptionHistory } from "@/components/SubscriptionHistory";
+import { IntlSubscriptionHistory } from "@/components/IntlSubscriptionHistory";
 import {
   PLAN_LIST,
   PLANS,
   resolveSubscription,
-  formatINR,
   TRIAL_DAYS,
   PRO_IS_WAITLIST,
   isComingSoonHighlight,
   type PlanTier,
   type BillingCycle,
 } from "@/lib/plans";
+import { COUNTRIES, isIndia, priceView } from "@/lib/intl-pricing";
 import { subscriptionHasFeature } from "@/lib/permissions";
 import { WallQRTab } from "@/components/WallQRTab";
 import { GymJoinQRCode } from "@/components/GymJoinQRCode";
@@ -394,6 +396,10 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
   // ── Billing state ───────────────────────────────────────────────────────────
   const [isProcessingBilling, setIsProcessingBilling] = useState(false);
   const [upiCheckout, setUpiCheckout] = useState<{ tier: PlanTier; cycle: BillingCycle } | null>(null);
+  // International (Payoneer) checkout + the selected billing country (default India,
+  // which uses the existing UPI flow). Non-India countries route to Payoneer.
+  const [billingCountry, setBillingCountry] = useState<string>("IN");
+  const [payoneerCheckout, setPayoneerCheckout] = useState<{ tier: PlanTier; cycle: BillingCycle } | null>(null);
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const { user } = useAuth();
 
@@ -944,12 +950,17 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
     }
   }, [userId]);
 
-  // Select / upgrade to a paid tier via the manual-UPI flow: open the checkout
-  // modal. The owner pays the platform UPI and submits a UTR; a platform admin
-  // verifies it and the plan is activated server-side (never client-written).
+  // Select / upgrade to a paid tier. India → manual-UPI checkout (owner pays the
+  // platform UPI + submits a UTR). Any other billing country → Payoneer checkout.
+  // Either way a platform admin verifies the payment and the plan is activated
+  // server-side (never client-written).
   const handleSelectPlan = useCallback((tier: PlanTier, cycle: BillingCycle) => {
-    setUpiCheckout({ tier, cycle });
-  }, []);
+    if (isIndia(billingCountry)) {
+      setUpiCheckout({ tier, cycle });
+    } else {
+      setPayoneerCheckout({ tier, cycle });
+    }
+  }, [billingCountry]);
 
   // ── Security / Support ────────────────────────────────────────────────────────
   const handlePasswordReset = useCallback(async () => {
@@ -1765,6 +1776,25 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                     )}
                   </div>
 
+                  {/* Billing country selector — India keeps INR + UPI; other
+                      countries get purchasing-power USD pricing + Payoneer. */}
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      <label htmlFor="billing-country" className="text-sm font-semibold text-slate-600">Billing country</label>
+                      <select
+                        id="billing-country"
+                        value={billingCountry}
+                        onChange={(e) => setBillingCountry(e.target.value)}
+                        className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-100"
+                      >
+                        {COUNTRIES.map((c) => (
+                          <option key={c.code} value={c.code}>{c.flag} {c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <p className="text-xs text-muted-foreground">Pricing is adjusted based on your billing country.</p>
+                  </div>
+
                   {/* Billing cycle toggle */}
                   <div className="flex items-center justify-center gap-3">
                     <button onClick={() => setBillingCycle("monthly")} className={`rounded-full px-5 py-2 text-sm font-bold transition-all ${billingCycle === "monthly" ? "bg-primary text-white shadow-glow" : "bg-slate-100 text-slate-500"}`}>Monthly</button>
@@ -1777,7 +1807,7 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                   <div className="grid gap-6 md:grid-cols-3">
                     {PLAN_LIST.map((p) => {
                       const isCurrent = billingSub.tier === p.id && billingSub.status === "active";
-                      const priceNum = billingCycle === "yearly" ? p.priceYearlyPerMonth : p.priceMonthly;
+                      const pv = priceView(billingCountry, p.id, billingCycle);
                       // Pro features aren't built yet — never let anyone pay for them.
                       const isWaitlist = p.id === "pro" && PRO_IS_WAITLIST;
                       return (
@@ -1790,11 +1820,11 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                           <CardHeader className="pb-4">
                             <CardTitle className={`text-xl font-bold ${p.popular ? "text-white" : "text-slate-900"}`}>{p.name}</CardTitle>
                             <div className="mt-2 flex items-baseline gap-1">
-                              <span className={`text-4xl font-black ${p.popular ? "text-white" : "text-slate-900"}`}>{formatINR(priceNum)}</span>
+                              <span className={`text-4xl font-black ${p.popular ? "text-white" : "text-slate-900"}`}>{pv.perMonthLabel}</span>
                               <span className={`text-sm font-medium ${p.popular ? "text-slate-400" : "text-muted-foreground"}`}>/ mo</span>
                             </div>
                             {billingCycle === "yearly" && (
-                              <p className={`mt-1 text-xs font-semibold ${p.popular ? "text-slate-400" : "text-muted-foreground"}`}>{formatINR(p.priceYearlyTotal)} billed yearly</p>
+                              <p className={`mt-1 text-xs font-semibold ${p.popular ? "text-slate-400" : "text-muted-foreground"}`}>{pv.totalLabel} billed yearly</p>
                             )}
                             <CardDescription className={`pt-2 leading-relaxed ${p.popular ? "text-slate-400" : "text-slate-500"}`}>{p.tagline}</CardDescription>
                           </CardHeader>
@@ -1851,8 +1881,9 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                       <CardTitle className="text-lg font-bold text-slate-900">Subscription payments</CardTitle>
                       <CardDescription>Your plan payment requests and their status.</CardDescription>
                     </CardHeader>
-                    <CardContent>
+                    <CardContent className="space-y-2">
                       <SubscriptionHistory key={historyRefresh} />
+                      <IntlSubscriptionHistory key={`intl-${historyRefresh}`} />
                     </CardContent>
                   </Card>
 
@@ -1861,6 +1892,15 @@ export function SettingsView({ initialCategory = "Gym Profile" }: { initialCateg
                     tier={upiCheckout?.tier ?? null}
                     cycle={upiCheckout?.cycle ?? billingCycle}
                     onClose={() => setUpiCheckout(null)}
+                    onSubmitted={() => setHistoryRefresh((n) => n + 1)}
+                  />
+
+                  <PayoneerCheckout
+                    open={!!payoneerCheckout}
+                    tier={payoneerCheckout?.tier ?? null}
+                    cycle={payoneerCheckout?.cycle ?? billingCycle}
+                    country={billingCountry}
+                    onClose={() => setPayoneerCheckout(null)}
                     onSubmitted={() => setHistoryRefresh((n) => n + 1)}
                   />
 

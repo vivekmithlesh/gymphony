@@ -66,7 +66,27 @@
       "Bash(command -v supabase)",
       "Bash(command -v psql)",
       "Bash(psql --version)",
-      "Bash(sed 's/=//')"
+      "Bash(sed 's/=//')",
+      "PowerShell(Copy-Item *)",
+      "Bash(git merge *)",
+      "Bash(vercel --version)",
+      "Bash(git *)",
+      "Read(//tmp/**)",
+      "Bash(break)",
+      "Bash(curl -s -o /tmp/root.html -w \"HTTP %{http_code}\\\\n\" http://localhost:8081/)",
+      "Bash(curl -s -o /tmp/dash.js -w \"HTTP %{http_code}  bytes=%{size_download}\\\\n\" \"http://localhost:8081/src/routes/dashboard.tsx\")",
+      "Bash(curl -s -o /tmp/dashc.js -w \"HTTP %{http_code}  bytes=%{size_download}\\\\n\" \"http://localhost:8081/src/routes/dashboard.tsx?tsr-split=component\")",
+      "Bash(npx vite *)",
+      "Bash(grep -oE '^[A-Z_]+' .env)",
+      "Bash(grep -oE '^[A-Z_]+' .env.local)",
+      "Bash(ls supabase/.temp)",
+      "Bash(cat supabase/.temp/project-ref)",
+      "Bash(timeout 60 npx supabase migration list --linked)",
+      "Bash(timeout 30 npx supabase db --help)",
+      "Bash(timeout 30 npx supabase db query --help)",
+      "Bash(timeout 120 npx supabase db query --linked --file supabase/migrations/20260704_link_member_by_pass.sql)",
+      "Bash(timeout 90 npx supabase db query --linked -o json \"select p.proname, pg_get_function_identity_arguments\\(p.oid\\) as args, p.prosecdef as security_definer, has_function_privilege\\('authenticated', p.oid, 'EXECUTE'\\) as auth_can_exec from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname in \\('lookup_member_for_link','link_member_to_gym'\\) order by p.proname;\")",
+      "Bash(npm test *)"
     ]
   }
 }
