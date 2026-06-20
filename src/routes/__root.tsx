@@ -144,7 +144,7 @@ function RootContent() {
     <>
       <AuthRedirects />
       <Outlet />
-      <Toaster position="bottom-center" richColors />
+      <Toaster position="bottom-center" richColors closeButton duration={5000} />
     </>
   );
 }
