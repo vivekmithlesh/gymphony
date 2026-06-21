@@ -25,6 +25,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as KioskModeRouteImport } from './routes/kiosk-mode'
 import { Route as KioskRouteImport } from './routes/kiosk'
 import { Route as GymProfileRouteImport } from './routes/gym-profile'
+import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as CityLeaderboardRouteImport } from './routes/city-leaderboard'
 import { Route as AdminRouteImport } from './routes/admin'
@@ -113,6 +114,11 @@ const GymProfileRoute = GymProfileRouteImport.update({
   path: '/gym-profile',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
+  id: '/forgot-password',
+  path: '/forgot-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
@@ -154,6 +160,7 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/city-leaderboard': typeof CityLeaderboardRoute
   '/dashboard': typeof DashboardRoute
+  '/forgot-password': typeof ForgotPasswordRoute
   '/gym-profile': typeof GymProfileRoute
   '/kiosk': typeof KioskRoute
   '/kiosk-mode': typeof KioskModeRoute
@@ -179,6 +186,7 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/city-leaderboard': typeof CityLeaderboardRoute
   '/dashboard': typeof DashboardRoute
+  '/forgot-password': typeof ForgotPasswordRoute
   '/gym-profile': typeof GymProfileRoute
   '/kiosk': typeof KioskRoute
   '/kiosk-mode': typeof KioskModeRoute
@@ -205,6 +213,7 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/city-leaderboard': typeof CityLeaderboardRoute
   '/dashboard': typeof DashboardRoute
+  '/forgot-password': typeof ForgotPasswordRoute
   '/gym-profile': typeof GymProfileRoute
   '/kiosk': typeof KioskRoute
   '/kiosk-mode': typeof KioskModeRoute
@@ -232,6 +241,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/city-leaderboard'
     | '/dashboard'
+    | '/forgot-password'
     | '/gym-profile'
     | '/kiosk'
     | '/kiosk-mode'
@@ -257,6 +267,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/city-leaderboard'
     | '/dashboard'
+    | '/forgot-password'
     | '/gym-profile'
     | '/kiosk'
     | '/kiosk-mode'
@@ -282,6 +293,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/city-leaderboard'
     | '/dashboard'
+    | '/forgot-password'
     | '/gym-profile'
     | '/kiosk'
     | '/kiosk-mode'
@@ -308,6 +320,7 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   CityLeaderboardRoute: typeof CityLeaderboardRoute
   DashboardRoute: typeof DashboardRoute
+  ForgotPasswordRoute: typeof ForgotPasswordRoute
   GymProfileRoute: typeof GymProfileRoute
   KioskRoute: typeof KioskRoute
   KioskModeRoute: typeof KioskModeRoute
@@ -443,6 +456,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GymProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/forgot-password': {
+      id: '/forgot-password'
+      path: '/forgot-password'
+      fullPath: '/forgot-password'
+      preLoaderRoute: typeof ForgotPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/dashboard': {
       id: '/dashboard'
       path: '/dashboard'
@@ -500,6 +520,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   CityLeaderboardRoute: CityLeaderboardRoute,
   DashboardRoute: DashboardRoute,
+  ForgotPasswordRoute: ForgotPasswordRoute,
   GymProfileRoute: GymProfileRoute,
   KioskRoute: KioskRoute,
   KioskModeRoute: KioskModeRoute,

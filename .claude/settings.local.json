@@ -86,7 +86,8 @@
       "Bash(timeout 30 npx supabase db query --help)",
       "Bash(timeout 120 npx supabase db query --linked --file supabase/migrations/20260704_link_member_by_pass.sql)",
       "Bash(timeout 90 npx supabase db query --linked -o json \"select p.proname, pg_get_function_identity_arguments\\(p.oid\\) as args, p.prosecdef as security_definer, has_function_privilege\\('authenticated', p.oid, 'EXECUTE'\\) as auth_can_exec from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname in \\('lookup_member_for_link','link_member_to_gym'\\) order by p.proname;\")",
-      "Bash(npm test *)"
+      "Bash(npm test *)",
+      "Bash(echo \"=== TSC EXIT: $? ===\")"
     ]
   }
 }

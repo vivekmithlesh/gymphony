@@ -1,7 +1,7 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Mail, Lock, ArrowRight, Sparkles, LogIn, Chrome, Loader2 } from "lucide-react";
+import { Mail, Lock, ArrowRight, Sparkles, LogIn, Loader2 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import * as z from "zod";
 import { supabase } from "@/supabase";
 import { useAuth } from "@/lib/auth-context";
 import { toast } from "sonner";
-import { postAuthDestination, readRedirectParam, isSafeRedirectPath } from "@/lib/auth-redirect";
+import { postAuthDestination } from "@/lib/auth-redirect";
 import { ensureMemberProfile } from "@/lib/member-signup";
 import { logEvent } from "@/lib/logger";
 // Member-login enforces member-only flow; avoid role fallback logic.
@@ -41,7 +41,6 @@ export const Route = createFileRoute("/member-login")({
 function MemberLoginPage() {
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
-  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const { session } = useAuth();
 
   // Single navigation authority: once a session exists (fresh login OR arriving
@@ -115,28 +114,6 @@ function MemberLoginPage() {
     }
   };
 
-  const handleGoogleLogin = async () => {
-    setIsGoogleLoading(true);
-    try {
-      // Carry any saved QR destination through the OAuth round-trip so the user
-      // lands back on /checkin/:id or /join/:id (not just the dashboard).
-      const redirectPath = readRedirectParam();
-      const dest = isSafeRedirectPath(redirectPath) ? redirectPath : "/member-dashboard";
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          // Dynamic origin so it works in dev, preview and production.
-          redirectTo: `${window.location.origin}${dest}`,
-        },
-      });
-
-      if (error) throw error;
-    } catch (err: any) {
-      toast.error(`Google login error: ${err.message}`);
-      setIsGoogleLoading(false);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Navbar />
@@ -175,32 +152,6 @@ function MemberLoginPage() {
               </div>
 
               <div className="space-y-6">
-                <Button
-                  type="button"
-                  onClick={handleGoogleLogin}
-                  disabled={isGoogleLoading || isLoading}
-                  variant="outline"
-                  className="w-full h-14 rounded-xl bg-white/5 border-white/10 text-white font-bold text-lg shadow-sm hover:bg-white/10 transition-all flex items-center justify-center gap-3"
-                >
-                  {isGoogleLoading ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    <>
-                      <Chrome className="h-5 w-5 text-[#4285F4]" />
-                      Continue with Google
-                    </>
-                  )}
-                </Button>
-
-                <div className="relative">
-                  <div className="absolute inset-0 flex items-center">
-                    <span className="w-full border-t border-white/10" />
-                  </div>
-                  <div className="relative flex justify-center text-xs uppercase">
-                    <span className="bg-transparent px-2 text-muted-foreground font-bold italic">Or continue with</span>
-                  </div>
-                </div>
-
                 <form className="space-y-6" onSubmit={loginForm.handleSubmit(onLoginSubmit, onLoginInvalid)}>
                   <div className="space-y-4">
                     <div className="space-y-2 group">
@@ -219,7 +170,15 @@ function MemberLoginPage() {
                     </div>
 
                     <div className="space-y-2 group">
-                      <Label htmlFor="password" className="text-sm font-medium text-foreground/80 group-focus-within:text-primary transition-colors">Password</Label>
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="password" className="text-sm font-medium text-foreground/80 group-focus-within:text-primary transition-colors">Password</Label>
+                        <Link
+                          to="/forgot-password"
+                          className="text-xs font-semibold text-primary underline-offset-4 hover:underline"
+                        >
+                          Forgot password?
+                        </Link>
+                      </div>
                       <div className="relative">
                         <Lock className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
                         <Input
@@ -236,7 +195,7 @@ function MemberLoginPage() {
 
                   <Button
                     type="submit"
-                    disabled={isLoading || isGoogleLoading}
+                    disabled={isLoading}
                     className="w-full h-14 rounded-xl bg-gradient-brand text-primary-foreground font-bold text-lg shadow-glow hover:shadow-primary/40 hover:-translate-y-0.5 transition-all group disabled:opacity-70"
                   >
                     {isLoading ? (

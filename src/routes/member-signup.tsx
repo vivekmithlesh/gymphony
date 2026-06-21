@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Mail, Lock, User as UserIcon, ArrowRight, Sparkles, Chrome, Loader2, Lock as LockIcon } from "lucide-react";
+import { Mail, Lock, User as UserIcon, ArrowRight, Sparkles, Loader2, Lock as LockIcon } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -10,12 +10,11 @@ import { Label } from "@/components/ui/label";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { supabase } from "@/supabase";
 import { toast } from "sonner";
 import { registerMember, ensureMemberProfile, claimInvite } from "@/lib/member-signup";
 import { IndianMobileInput } from "@/components/IndianMobileInput";
 import { toIndianLocal, toIndianE164 } from "@/lib/phone";
-import { postAuthDestination, readRedirectParam, isSafeRedirectPath } from "@/lib/auth-redirect";
+import { postAuthDestination } from "@/lib/auth-redirect";
 
 const memberSignupSchema = z.object({
   fullName: z.string().min(2, "Please enter your name"),
@@ -41,7 +40,6 @@ export const Route = createFileRoute("/member-signup")({
 function MemberSignupPage() {
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
-  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
   // BulkOnboard invite params (owner-generated): when present this is an
   // "activate my membership" flow with a phone locked to the invite.
@@ -119,22 +117,6 @@ function MemberSignupPage() {
     }
   };
 
-  const handleGoogleSignup = async () => {
-    setIsGoogleLoading(true);
-    try {
-      const redirectPath = readRedirectParam();
-      const dest = isSafeRedirectPath(redirectPath) ? redirectPath : "/member-join";
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: { redirectTo: `${window.location.origin}${dest}` },
-      });
-      if (error) throw error;
-    } catch (err: any) {
-      toast.error(`Google sign-up error: ${err.message}`);
-      setIsGoogleLoading(false);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Navbar />
@@ -174,36 +156,6 @@ function MemberSignupPage() {
               </div>
 
               <div className="space-y-6">
-                {!isInvite && (
-                  <>
-                    <Button
-                      type="button"
-                      onClick={handleGoogleSignup}
-                      disabled={isGoogleLoading || isLoading}
-                      variant="outline"
-                      className="w-full h-14 rounded-xl bg-white/5 border-white/10 text-white font-bold text-lg shadow-sm hover:bg-white/10 transition-all flex items-center justify-center gap-3"
-                    >
-                      {isGoogleLoading ? (
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                      ) : (
-                        <>
-                          <Chrome className="h-5 w-5 text-[#4285F4]" />
-                          Continue with Google
-                        </>
-                      )}
-                    </Button>
-
-                    <div className="relative">
-                      <div className="absolute inset-0 flex items-center">
-                        <span className="w-full border-t border-white/10" />
-                      </div>
-                      <div className="relative flex justify-center text-xs uppercase">
-                        <span className="bg-transparent px-2 text-muted-foreground font-bold italic">Or sign up with email</span>
-                      </div>
-                    </div>
-                  </>
-                )}
-
                 <form className="space-y-6" onSubmit={form.handleSubmit(onSubmit)}>
                   <div className="space-y-4">
                     <div className="space-y-2 group">
@@ -270,7 +222,7 @@ function MemberSignupPage() {
 
                   <Button
                     type="submit"
-                    disabled={isLoading || isGoogleLoading}
+                    disabled={isLoading}
                     className="w-full h-14 rounded-xl bg-gradient-brand text-primary-foreground font-bold text-lg shadow-glow hover:shadow-primary/40 hover:-translate-y-0.5 transition-all group disabled:opacity-70"
                   >
                     {isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : (
