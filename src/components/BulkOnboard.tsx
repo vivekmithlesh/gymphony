@@ -235,12 +235,13 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
   //   • token   — the pending member's row id (acts as a one-time claim token)
   //
   // The MEMBER signup route (/member-signup) honours these params:
-  //   1. Read `phone` + `token` from the URL and bind the matching members row
-  //      (status = 'pending_signup', id = token, mobile_number = phone).
-  //   2. The phone field is PRE-FILLED + DISABLED — the member can't change it;
-  //      their identity is tied to the number the owner registered.
-  //   3. On successful signup, members.auth_user_id = the new auth uid and
-  //      status flips 'pending_signup' -> 'Active' (see claimInvite()).
+  //   1. Read `phone` + `token` from the URL; the phone field is PRE-FILLED +
+  //      DISABLED so the member's identity is tied to the number the owner set.
+  //   2. On successful signup, claimInvite() creates the member's OWN profiles
+  //      row keyed by their auth uid (members.id = profiles.id = auth.uid() — the
+  //      canonical identity; there is no auth_user_id column) and binds it to the
+  //      invite's gym_id / gym_owner_id with status='Pending'.
+  //   3. The owner approves a verified payment to flip status -> 'Active'.
   //   4. Once active, their Virtual ID (QR = member id) is what the Kiosk scans,
   //      so attendance linking is automatic.
   // For production, sign `token` (e.g. a short-lived JWT) instead of the raw row
@@ -321,15 +322,19 @@ export function BulkOnboard({ open, onClose, gymId, gymOwnerId, gymName, plans, 
           mobile_number: phoneE164,
           phone: phoneE164,
           membership_plan: r.plan,
-          status: "pending_signup",
+          status: "pending",
           expiry_date: expiry.toISOString(),
           gym_id: gymId,
           gym_owner_id: gymOwnerId,
         };
       });
 
+      // Owner-added members (no account yet) can't be profiles rows — profiles.id
+      // is FK-bound to auth.users. They're stored as pending invites and claimed
+      // when each person signs up via their invite link. (member_invites RLS lets
+      // the owner insert rows where gym_owner_id = auth.uid().)
       const { data, error } = await supabase
-        .from("members")
+        .from("member_invites")
         .insert(payload)
         .select("id, full_name, mobile_number");
 

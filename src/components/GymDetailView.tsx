@@ -124,26 +124,19 @@ export function GymDetailView({ gymId, memberId }: { gymId: string; memberId?: s
         .eq("id", gymId)
         .maybeSingle();
 
-      // 2. Update members table
-      const { error: memberError } = await supabase
-        .from("members")
-        .update({ 
-          gym_id: gymId,
-          gym_owner_id: gymData?.gym_owner_id || null
-        })
-        .eq("id", memberId);
-
-      if (memberError) throw memberError;
-
-      // 3. Update profiles table for consistency
+      // Bind the member to this gym on their `profiles` row (the source of truth;
+      // `members` is a read-only view so updating it fails). Both gym_id (scope)
+      // and gym_owner_id (kiosk guard) are set; status stays as-is (Pending until
+      // owner approval — the lockdown trigger blocks client status changes anyway).
       const { error: profileError } = await supabase
         .from("profiles")
-        .update({ gym_id: gymId })
+        .update({ gym_id: gymId, gym_owner_id: gymData?.gym_owner_id || null })
         .eq("id", memberId);
 
-      if (profileError) {
-        console.warn("Could not update profile gym_id:", profileError);
-      }
+      if (profileError) throw profileError;
+
+      // Consume any pending owner-created invite matching this member's phone.
+      void supabase.rpc("app_claim_member_invite", { p_gym_id: gymId });
 
       setMemberGymId(gymId);
       toast.success(`✅ Welcome to ${gym?.gym_name}!`);

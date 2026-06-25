@@ -210,6 +210,9 @@ function DashboardPage() {
   }, [activeTab]);
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [addMemberTab, setAddMemberTab] = useState("Manual Entry");
+  // Bumped after a successful manual add so <MembersList/> re-fetches and the new
+  // (Pending) member shows immediately without a page refresh.
+  const [memberListReloadToken, setMemberListReloadToken] = useState(0);
   const [memberIdToLink, setMemberIdToLink] = useState("");
   const [memberDetailsToLink, setMemberDetailsToLink] = useState<any>(null);
   const [isFetchingMemberToLink, setIsFetchingMemberToLink] = useState(false);
@@ -488,6 +491,12 @@ function DashboardPage() {
   const [newMemberName, setNewMemberName] = useState("");
   const [newMemberPhone, setNewMemberPhone] = useState("");
   const [newMemberPlan, setNewMemberPlan] = useState("");
+  // Optional manual-add fields (stored on member_invites; migration 20260709).
+  const [newMemberEmail, setNewMemberEmail] = useState("");
+  const [newMemberStartDate, setNewMemberStartDate] = useState("");
+  const [newMemberExpiryDate, setNewMemberExpiryDate] = useState("");
+  const [newMemberPaymentStatus, setNewMemberPaymentStatus] = useState("");
+  const [newMemberNotes, setNewMemberNotes] = useState("");
   const [isSavingMember, setIsSavingMember] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [lastAddedMember, setLastAddedMember] = useState<any>(null);
@@ -1141,67 +1150,81 @@ function DashboardPage() {
         return;
       }
 
-      // Proactively reject duplicate phone numbers within this gym before
-      // inserting, so the owner gets a clear message instead of a DB error.
-      const { data: existingMember, error: duplicateCheckError } = await supabase
-        .from("members")
-        .select("id")
-        .eq("gym_owner_id", currentUserId)
-        .or(`mobile_number.eq.${normalizedMemberPhone},phone.eq.${normalizedMemberPhone}`)
-        .limit(1)
-        .maybeSingle();
+      // Expiry: use the owner-entered date if given, else derive from the plan.
+      const derivedExpiry = new Date();
+      derivedExpiry.setMonth(derivedExpiry.getMonth() + (selectedPlan.duration || 1));
+      const expiryIso = newMemberExpiryDate
+        ? new Date(newMemberExpiryDate).toISOString()
+        : derivedExpiry.toISOString();
 
-      if (duplicateCheckError) {
-        console.warn("Duplicate phone check failed, continuing to insert:", duplicateCheckError);
-      } else if (existingMember) {
-        toast.error("A member with this phone number already exists in your gym.");
+      // profiles.id is FK-bound to auth.users (profiles_id_fkey), so an OFFLINE
+      // member (no account yet) cannot be a profiles/members row. Add them as a
+      // PENDING invite via an owner-authoritative RPC that resolves the gym from
+      // auth.uid() (a client can't target another gym) and rejects duplicate
+      // phones. The person becomes a full member when they sign up through the
+      // gym's Join QR and the invite is claimed (app_claim_member_invite).
+      const fullArgs = {
+        p_full_name: newMemberName,
+        p_phone: normalizedMemberPhone,
+        p_plan: selectedPlan.name,
+        p_expiry: expiryIso,
+        p_email: newMemberEmail.trim() || null,
+        p_start_date: newMemberStartDate || null,
+        p_payment_status: newMemberPaymentStatus || null,
+        p_notes: newMemberNotes.trim() || null,
+      };
+      let { data: rpcData, error: rpcError } = await supabase.rpc("app_add_member_invite", fullArgs);
+
+      // Backward-compat: if the widened RPC (migration 20260709) isn't applied yet,
+      // PostgREST can't find the 8-arg signature — fall back to the core fields so
+      // basic Add Member keeps working until the migration is run.
+      if (rpcError && String((rpcError as any).code) === "PGRST202") {
+        ({ data: rpcData, error: rpcError } = await supabase.rpc("app_add_member_invite", {
+          p_full_name: fullArgs.p_full_name,
+          p_phone: fullArgs.p_phone,
+          p_plan: fullArgs.p_plan,
+          p_expiry: fullArgs.p_expiry,
+        }));
+      }
+
+      if (rpcError) throw rpcError;
+
+      const result = (rpcData ?? {}) as {
+        success?: boolean; code?: string; error?: string; invite_id?: string;
+      };
+      if (!result.success) {
+        toast.error(result.error || "Could not add member. Please try again.");
         setIsSavingMember(false);
         return;
       }
 
-      const expiryDate = new Date();
-      expiryDate.setMonth(expiryDate.getMonth() + (selectedPlan.duration || 1));
-
-      const { data: newMember, error: insertError } = await supabase
-        .from("members")
-        .insert([{
-          full_name: newMemberName,
-          mobile_number: normalizedMemberPhone,
-          phone: normalizedMemberPhone,
-          membership_plan: selectedPlan.name,
-          expiry_date: expiryDate.toISOString(),
-          status: "Pending",
-          gym_id: ownerGymId,
-          gym_owner_id: currentUserId // associate invitation slot with this owner
-        }])
-        .select()
-        .single();
-
-      if (insertError) throw insertError;
-
-      // Log activity for invitation creation (does not mark member active)
-      if (currentUserId) {
-        await supabase.from("activity_log").insert([{
-          gym_owner_id: currentUserId,
-          activity_type: "invitation_created",
-          description: `Invitation slot created for ${newMemberName}.`,
-          is_read: false
-        }]);
-      }
+      const newMember = {
+        id: result.invite_id,
+        full_name: newMemberName,
+        membership_plan: selectedPlan.name,
+      };
 
       setMemberData(newMember);
       setLastAddedMember({ ...newMember, price: selectedPlan.price });
       setIsAddMemberOpen(false);
       setShowSuccessModal(true);
-      toast.success("Member added successfully!");
+      toast.success("Member added! They'll show as Pending until they sign up via your Join QR.");
       
       // Reset form
       setNewMemberName("");
       setNewMemberPhone("");
       setNewMemberPlan("");
-      
-      // NOTE: Do not refresh members count for invitation slots — count should update
-      // only when the invited member completes signup and becomes Active.
+      setNewMemberEmail("");
+      setNewMemberStartDate("");
+      setNewMemberExpiryDate("");
+      setNewMemberPaymentStatus("");
+      setNewMemberNotes("");
+
+      // Surface the new member immediately: refresh the headline counts and signal
+      // <MembersList/> to re-fetch. The member is created as "Pending" and becomes
+      // "Active" only when the owner approves a verified payment.
+      setMemberListReloadToken((t) => t + 1);
+      void fetchMembersCounts();
     } catch (error: any) {
       console.warn("Error saving member:", error);
 
@@ -1308,10 +1331,16 @@ function DashboardPage() {
   };
 
   const handleCopyLink = () => {
+    // The Join QR MUST encode the real gym id (gym_settings.id). Never fall back to
+    // currentUserId — that produces a /join/<owner_uid> link that 404s the gym
+    // lookup. JoinGymFlow resolves the gym by gym_settings.id.
+    const ownerGymId = gymSettings?.id;
+    if (!ownerGymId) {
+      toast.error("Complete your gym setup before sharing a Join QR.");
+      return;
+    }
     try {
-      const ownerGymId = gymSettings?.id ?? currentUserId ?? "";
-      const inviteLink = buildJoinUrl(ownerGymId);
-      navigator.clipboard.writeText(inviteLink);
+      navigator.clipboard.writeText(buildJoinUrl(ownerGymId));
       toast.success("Invite link copied to clipboard");
     } catch (err) {
       console.warn("Copy failed:", err);
@@ -1873,7 +1902,7 @@ function DashboardPage() {
                 setActiveTab("Settings");
               }}
             />
-            <MembersList />
+            <MembersList reloadToken={memberListReloadToken} />
           </motion.div>
         );
       case "Attendance":
@@ -2436,19 +2465,19 @@ function DashboardPage() {
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-white rounded-[2rem] overflow-hidden shadow-2xl p-8 space-y-6"
+              className="w-full max-w-md bg-white rounded-[2rem] max-h-[90vh] overflow-y-auto shadow-2xl p-8 space-y-6"
             >
               <div className="flex items-center justify-between">
                 <h3 className="text-2xl font-bold text-slate-900">Add Member</h3>
                 <button onClick={() => setIsAddMemberOpen(false)}><X className="h-6 w-6 text-slate-400" /></button>
               </div>
 
-              <div className="flex p-1 bg-slate-100 rounded-2xl overflow-x-auto">
-                {["Manual Entry", "Share QR"].map((tab) => (
+              <div className="flex p-1 bg-slate-100 rounded-2xl">
+                {["Manual Entry", "Join Gym QR"].map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setAddMemberTab(tab)}
-                    className={`flex-1 py-2 px-3 text-[10px] md:text-sm font-bold rounded-xl transition-all whitespace-nowrap ${
+                    className={`flex-1 py-2 px-3 text-xs md:text-sm font-bold rounded-xl transition-all whitespace-nowrap ${
                       addMemberTab === tab ? "bg-white text-primary shadow-sm" : "text-slate-500"
                     }`}
                   >
@@ -2495,6 +2524,40 @@ function DashboardPage() {
                       </SelectContent>
                     </Select>
                   </div>
+
+                  {/* Optional details (stored on the member_invites row). */}
+                  <div className="space-y-2">
+                    <Label className="text-slate-600">Email <span className="text-slate-400 font-normal">(optional)</span></Label>
+                    <Input type="email" value={newMemberEmail} onChange={(e) => setNewMemberEmail(e.target.value)} placeholder="member@email.com" className="bg-slate-50 text-slate-900" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <Label className="text-slate-600">Start date</Label>
+                      <Input type="date" value={newMemberStartDate} onChange={(e) => setNewMemberStartDate(e.target.value)} className="bg-slate-50 text-slate-900" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-slate-600">Expiry date</Label>
+                      <Input type="date" value={newMemberExpiryDate} onChange={(e) => setNewMemberExpiryDate(e.target.value)} className="bg-slate-50 text-slate-900" />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-slate-600">Payment status</Label>
+                    <Select value={newMemberPaymentStatus} onValueChange={setNewMemberPaymentStatus}>
+                      <SelectTrigger className="bg-slate-50 text-slate-900">
+                        <SelectValue placeholder="Not set" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pending">Pending</SelectItem>
+                        <SelectItem value="partial">Partial</SelectItem>
+                        <SelectItem value="paid">Paid</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-slate-600">Notes <span className="text-slate-400 font-normal">(optional)</span></Label>
+                    <Input value={newMemberNotes} onChange={(e) => setNewMemberNotes(e.target.value)} placeholder="e.g. paid cash at desk" className="bg-slate-50 text-slate-900" />
+                  </div>
+
                   <Button onClick={handleSaveMember} disabled={isSavingMember} className="w-full h-12 bg-primary text-white font-bold rounded-xl">
                     {isSavingMember ? (
                       <span className="flex items-center justify-center gap-2">
@@ -2506,27 +2569,49 @@ function DashboardPage() {
                     )}
                   </Button>
                 </div>
+              ) : !gymSettings?.id ? (
+                // Join QR requires a real gym_settings.id. Without it we'd encode a
+                // dead /join/<owner_uid> link, so block generation and point the
+                // owner to finish setup.
+                <div className="text-center space-y-4 py-6">
+                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-50 text-amber-500">
+                    <AlertCircle className="h-8 w-8" />
+                  </div>
+                  <h4 className="text-lg font-bold text-slate-900">Finish your gym setup</h4>
+                  <p className="mx-auto max-w-xs text-sm text-slate-500">
+                    Your gym profile isn't complete yet, so we can't generate a Join QR. Add your
+                    gym details in Settings, then come back here.
+                  </p>
+                  <Button
+                    onClick={() => { setIsAddMemberOpen(false); setActiveTab("Settings"); }}
+                    className="h-11 rounded-xl bg-primary text-white font-bold"
+                  >
+                    Go to Settings
+                  </Button>
+                </div>
               ) : (
                 <div className="text-center space-y-4">
-                  {/* ... existing Share QR ... */}
-                  <div className="mx-auto w-48 h-48 bg-slate-50 rounded-3xl border-2 border-slate-100 flex items-center justify-center p-4">
-                      {(() => {
-                        const ownerGymId = gymSettings?.id ?? currentUserId ?? "";
-                        const inviteLink = buildJoinUrl(ownerGymId);
-                        return <QRCodeSVG value={inviteLink} size={320} className="w-full h-full" />;
-                      })()}
-                    </div>
+                  {/* Join Gym QR — members scan this, sign up, pick a plan, pay, and
+                      then wait for owner approval. Encodes the public /join/:gymId
+                      deep-link (handled by JoinGymFlow). Always the real gym id. */}
+                  <div className="mx-auto w-48 h-48 max-w-full bg-slate-50 rounded-3xl border-2 border-slate-100 flex items-center justify-center p-4">
+                    <QRCodeSVG value={buildJoinUrl(gymSettings.id)} size={320} className="w-full h-full" />
+                  </div>
 
-                    <div className="space-y-2">
-                      <p className="text-sm text-slate-700">Invite Link</p>
-                      <div className="wrap-break-word rounded-2xl bg-slate-50 p-3 text-xs text-slate-700 border border-slate-100">
-                        {buildJoinUrl(gymSettings?.id ?? currentUserId ?? "")}
-                      </div>
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-slate-700">Invite Link</p>
+                    <div className="rounded-2xl bg-slate-50 p-3 text-xs text-slate-700 border border-slate-100 break-all">
+                      {buildJoinUrl(gymSettings.id)}
                     </div>
+                  </div>
 
                   <Button onClick={handleCopyLink} className="w-full h-12 bg-primary/10 text-primary font-bold rounded-xl border border-primary/10">
                     Copy Invite Link
                   </Button>
+
+                  <p className="text-xs text-slate-400 leading-relaxed px-2">
+                    Share this QR with new members. They can sign up, select a plan, pay, and request approval.
+                  </p>
                 </div>
               )}
             </motion.div>

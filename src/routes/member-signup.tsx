@@ -7,17 +7,20 @@ import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useForm } from "react-hook-form";
+import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { toast } from "sonner";
 import { registerMember, ensureMemberProfile, claimInvite } from "@/lib/member-signup";
 import { IndianMobileInput } from "@/components/IndianMobileInput";
-import { toIndianLocal, toIndianE164 } from "@/lib/phone";
+import { toIndianLocal, toIndianE164, looksLikeIndianMobile } from "@/lib/phone";
 import { postAuthDestination } from "@/lib/auth-redirect";
 
 const memberSignupSchema = z.object({
   fullName: z.string().min(2, "Please enter your name"),
+  // Optional at the schema level because the invite flow locks the phone to the
+  // invite param; the self-serve path enforces a valid 10-digit number in onSubmit.
+  phone: z.string().optional(),
   email: z.string().email("Please enter a valid email address"),
   password: z.string().min(6, "Password must be at least 6 characters"),
 });
@@ -52,10 +55,16 @@ function MemberSignupPage() {
 
   const form = useForm<MemberSignupFormValues>({
     resolver: zodResolver(memberSignupSchema),
-    defaultValues: { fullName: "", email: "", password: "" },
+    defaultValues: { fullName: "", phone: "", email: "", password: "" },
   });
 
   const onSubmit = async (data: MemberSignupFormValues) => {
+    // Self-serve members must give a valid Indian mobile (invite locks it instead).
+    if (!isInvite && !looksLikeIndianMobile(data.phone || "")) {
+      form.setError("phone", { message: "Enter a valid 10-digit Indian mobile number" });
+      return;
+    }
+
     setIsLoading(true);
     try {
       const outcome = await registerMember({
@@ -96,9 +105,9 @@ function MemberSignupPage() {
         return;
       }
 
-      // Self-serve: ensure base rows, then send to the saved gym destination
-      // (e.g. a /join/:gymId invite they came from) or the Join Gym screen.
-      await ensureMemberProfile(outcome.user);
+      // Self-serve: ensure base rows (with the phone they entered), then send to
+      // the saved gym destination (e.g. a /join/:gymId invite) or the Join screen.
+      await ensureMemberProfile(outcome.user, toIndianE164(data.phone || ""));
       form.reset();
       if (outcome.hasSession) {
         toast.success("✅ Account created! Let's find your gym.");
@@ -172,7 +181,7 @@ function MemberSignupPage() {
                       {form.formState.errors.fullName && <p className="text-xs text-red-500">{form.formState.errors.fullName.message}</p>}
                     </div>
 
-                    {isInvite && (
+                    {isInvite ? (
                       <div className="space-y-2">
                         <IndianMobileInput
                           id="invite-phone"
@@ -187,6 +196,22 @@ function MemberSignupPage() {
                           Your number is set by your gym and can’t be changed — it secures your membership identity.
                         </p>
                       </div>
+                    ) : (
+                      <Controller
+                        control={form.control}
+                        name="phone"
+                        render={({ field }) => (
+                          <IndianMobileInput
+                            id="member-phone"
+                            label="Phone Number"
+                            value={field.value || ""}
+                            onChange={field.onChange}
+                            placeholder="9876543210"
+                            inputClassName="bg-white/5 border-white/10"
+                            error={form.formState.errors.phone?.message}
+                          />
+                        )}
+                      />
                     )}
 
                     <div className="space-y-2 group">

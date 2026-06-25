@@ -2,10 +2,10 @@
 // PHASE 2 — TEST DATA GENERATION
 // scale-test / 01-generate-members.mjs
 // -----------------------------------------------------------------------------
-// Creates N TEST_ members for TEST_GYM_ID by INSERTING into the `members` view
-// (the same path the owner dashboard's "Add Member" uses — handleSaveMember),
-// so the view's INSTEAD-OF trigger writes profiles + generates short_id exactly
-// like production. Inserted in safe batches with progress logging.
+// Creates N TEST_ members for TEST_GYM_ID by INSERTING into the BASE table
+// `profiles` (role='member', generated id) — the same path the owner dashboard's
+// "Add Member" uses (handleSaveMember). `members` is a read-only view, so writes
+// must target profiles. Inserted in safe batches with progress logging.
 //
 // Usage:
 //   node scripts/scale-test/01-generate-members.mjs            # default 500
@@ -46,13 +46,17 @@ for (let i = 1; i <= COUNT; i++) {
   if (i % 5 === 0) expiry.setMonth(expiry.getMonth() - PLAN_MONTHS[plan] - 1);
 
   rows.push({
+    // Members are rows in the BASE table `profiles` (the `members` relation is a
+    // read-only view). profiles.id has no FK to auth.users, so an offline test
+    // member is a profiles row with a generated id and role='member'.
+    id: crypto.randomUUID(),
+    role: "member",
     full_name: name,
     mobile_number: testPhone(i),
     phone: testPhone(i),
     membership_plan: plan,
     expiry_date: expiry.toISOString(),
     status: i / COUNT <= ACTIVE_RATIO ? "Active" : "Pending",
-    auth_user_id: null,
     gym_id: gym.id,
     gym_owner_id: gym.gym_owner_id,
   });
@@ -71,7 +75,7 @@ const startedAt = Date.now();
 
 for (let start = 0; start < rows.length; start += BATCH) {
   const chunk = rows.slice(start, start + BATCH);
-  const { data, error } = await supabase.from("members").insert(chunk).select("id");
+  const { data, error } = await supabase.from("profiles").insert(chunk).select("id");
 
   if (error) {
     failed += chunk.length;

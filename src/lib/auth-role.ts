@@ -21,11 +21,13 @@ export const resolveUserRole = async (
     app_metadata?: Record<string, unknown> | null;
   },
 ): Promise<UserRole | null> => {
-  const [profileLookup, ownerLookup, memberLookup, memberByAuthLookup] = await Promise.all([
+  // Identity is members.id = profiles.id = auth.uid() (the `members` view has no
+  // auth_user_id column — querying it 400s on every resolve). Look the member up
+  // by id only.
+  const [profileLookup, ownerLookup, memberLookup] = await Promise.all([
     supabase.from("profiles").select("role").eq("id", user.id).maybeSingle(),
     supabase.from("gym_profiles").select("role").eq("id", user.id).maybeSingle(),
     supabase.from("members").select("id").eq("id", user.id).maybeSingle(),
-    supabase.from("members").select("id").eq("auth_user_id", user.id).maybeSingle(),
   ]);
 
   const profileRole = normalizeRole(profileLookup.data?.role);
@@ -42,7 +44,7 @@ export const resolveUserRole = async (
     return "owner";
   }
 
-  if (memberLookup.data || memberByAuthLookup.data) {
+  if (memberLookup.data) {
     return "member";
   }
 
