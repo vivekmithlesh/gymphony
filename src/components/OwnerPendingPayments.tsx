@@ -18,6 +18,7 @@ interface PendingPayment {
   payer_name?: string | null;
   evidence_url?: string | null;
   member_name?: string;
+  member_phone?: string | null;
 }
 
 interface OwnerPendingPaymentsProps {
@@ -46,9 +47,11 @@ export function OwnerPendingPayments({ ownerId, alertsEnabled = true }: OwnerPen
   const fetchPending = useCallback(async () => {
     if (!ownerId) return;
     try {
+      // select("*") so this keeps working whether or not the member_name/
+      // member_phone snapshot columns (mig 20260714) are present yet.
       const { data, error } = await supabase
         .from("payments")
-        .select("id, member_id, amount, plan_name, payment_method, payment_date, created_at, utr, payer_name, evidence_url")
+        .select("*")
         .eq("gym_owner_id", ownerId)
         .eq("status", "pending_verification")
         .order("created_at", { ascending: false });
@@ -58,8 +61,11 @@ export function OwnerPendingPayments({ ownerId, alertsEnabled = true }: OwnerPen
       }
 
       const rows = (data as PendingPayment[]) || [];
-      // Resolve member names from members (fallback profiles) in one shot.
-      const ids = Array.from(new Set(rows.map((r) => r.member_id).filter(Boolean)));
+      // The payment carries a member_name/member_phone snapshot (mig 20260714) so we
+      // don't depend on reading the member's profile — which RLS blocks for a member
+      // not yet bound to this gym (that was the generic "Member" bug). Only fall back
+      // to a profiles/members lookup for older rows with no snapshot.
+      const ids = Array.from(new Set(rows.filter((r) => !r.member_name).map((r) => r.member_id).filter(Boolean)));
       const nameById = new Map<string, string>();
       if (ids.length) {
         const { data: members } = await supabase.from("members").select("id, full_name").in("id", ids);
@@ -70,7 +76,12 @@ export function OwnerPendingPayments({ ownerId, alertsEnabled = true }: OwnerPen
           profs?.forEach((p: any) => p.full_name && nameById.set(p.id, p.full_name));
         }
       }
-      setPayments(rows.map((r) => ({ ...r, member_name: nameById.get(r.member_id) || "Member" })));
+      setPayments(
+        rows.map((r) => ({
+          ...r,
+          member_name: r.member_name || nameById.get(r.member_id) || r.payer_name || "Member",
+        })),
+      );
     } finally {
       setIsLoading(false);
     }
@@ -160,8 +171,13 @@ export function OwnerPendingPayments({ ownerId, alertsEnabled = true }: OwnerPen
                 className="flex items-center justify-between gap-3 rounded-2xl border border-amber-100 bg-white p-4"
               >
                 <div className="min-w-0">
-                  <p className="truncate font-bold text-slate-900">{p.member_name}</p>
-                  {p.payer_name && (
+                  <p className="truncate font-bold text-slate-900">
+                    {p.member_name}
+                    {p.member_phone && (
+                      <span className="ml-2 text-xs font-medium text-slate-500">{p.member_phone}</span>
+                    )}
+                  </p>
+                  {p.payer_name && p.payer_name !== p.member_name && (
                     <p className="mt-0.5 truncate text-[11px] text-slate-500">
                       Paid as <span className="font-semibold text-slate-700">{p.payer_name}</span>
                     </p>

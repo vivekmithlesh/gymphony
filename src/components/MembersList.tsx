@@ -355,7 +355,7 @@ export function MembersList({ reloadToken = 0 }: { reloadToken?: number } = {}) 
       // present yet (migration 20260708 not applied) this silently stays empty.
       const { data: inviteRows } = await supabase
         .from("member_invites")
-        .select("id, full_name, phone, mobile_number, membership_plan, created_at")
+        .select("id, full_name, phone, mobile_number, membership_plan, created_at, invite_token")
         .eq("gym_owner_id", userId)
         .eq("status", "pending")
         .order("created_at", { ascending: false });
@@ -363,6 +363,7 @@ export function MembersList({ reloadToken = 0 }: { reloadToken?: number } = {}) 
       const inviteMembers = (inviteRows || []).map((inv: any) => ({
         id: `invite:${inv.id}`,
         invite_id: inv.id,
+        invite_token: inv.invite_token || null,
         __invite: true,
         member_name: inv.full_name,
         phone: inv.phone || inv.mobile_number || "",
@@ -448,7 +449,11 @@ export function MembersList({ reloadToken = 0 }: { reloadToken?: number } = {}) 
     setShareInviteMember(member);
   };
 
-  const shareInviteLink = gymMeta.id ? buildJoinUrl(gymMeta.id) : "";
+  // Member-specific invite link when we have the invite's token (/join/:id?invite=…);
+  // falls back to the plain gym Join link.
+  const shareInviteLink = gymMeta.id
+    ? `${buildJoinUrl(gymMeta.id)}${shareInviteMember?.invite_token ? `?invite=${shareInviteMember.invite_token}` : ""}`
+    : "";
   const shareInviteMessage = (m: any) =>
     `Hi ${m?.member_name || "there"}, join ${gymMeta.name || "our gym"} on Gymphony — ` +
     `sign up, pick your plan and activate your membership here: ${shareInviteLink}`;
