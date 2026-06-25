@@ -1171,7 +1171,6 @@ function DashboardPage() {
           membership_plan: selectedPlan.name,
           expiry_date: expiryDate.toISOString(),
           status: "Pending",
-          auth_user_id: null,
           gym_id: ownerGymId,
           gym_owner_id: currentUserId // associate invitation slot with this owner
         }])
@@ -2445,15 +2444,10 @@ function DashboardPage() {
               </div>
 
               <div className="flex p-1 bg-slate-100 rounded-2xl overflow-x-auto">
-                {["Manual Entry", "Share QR", "Scan Member", "Add by ID"].map((tab) => (
+                {["Manual Entry", "Share QR"].map((tab) => (
                   <button
                     key={tab}
-                    onClick={() => {
-                      setAddMemberTab(tab);
-                      if (tab === "Scan Member") {
-                        setShowMemberQRScanner(true);
-                      }
-                    }}
+                    onClick={() => setAddMemberTab(tab)}
                     className={`flex-1 py-2 px-3 text-[10px] md:text-sm font-bold rounded-xl transition-all whitespace-nowrap ${
                       addMemberTab === tab ? "bg-white text-primary shadow-sm" : "text-slate-500"
                     }`}
@@ -2512,7 +2506,7 @@ function DashboardPage() {
                     )}
                   </Button>
                 </div>
-              ) : addMemberTab === "Share QR" ? (
+              ) : (
                 <div className="text-center space-y-4">
                   {/* ... existing Share QR ... */}
                   <div className="mx-auto w-48 h-48 bg-slate-50 rounded-3xl border-2 border-slate-100 flex items-center justify-center p-4">
@@ -2532,83 +2526,6 @@ function DashboardPage() {
 
                   <Button onClick={handleCopyLink} className="w-full h-12 bg-primary/10 text-primary font-bold rounded-xl border border-primary/10">
                     Copy Invite Link
-                  </Button>
-                </div>
-              ) : addMemberTab === "Scan Member" ? (
-                <div className="text-center space-y-4">
-                  {/* ... existing Scan Member ... */}
-                  <p className="text-sm text-slate-600 font-medium">Point camera at member QR code</p>
-                  {!isScanningMember && (
-                    <div
-                      id="member-qr-reader"
-                      className="rounded-2xl border-2 border-dashed border-primary bg-slate-50 overflow-hidden"
-                      style={{ minHeight: "300px" }}
-                    />
-                  )}
-                  {isScanningMember && (
-                    <div className="flex flex-col items-center justify-center gap-3 py-12 rounded-2xl bg-slate-50">
-                      <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                      <p className="text-sm font-medium text-slate-600">
-                        {isLinkingMember ? "Linking member..." : "Processing QR code..."}
-                      </p>
-                    </div>
-                  )}
-                  <Button
-                    variant="outline"
-                    onClick={handleCloseMemberQRScanner}
-                    disabled={isScanningMember}
-                    className="w-full h-12 rounded-2xl border-slate-200 text-slate-700 font-semibold"
-                  >
-                    Close Scanner
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-6">
-                  <div className="space-y-2">
-                    <Label className="text-slate-600">Enter Member ID</Label>
-                    <div className="relative">
-                      <Input 
-                        value={memberIdToLink} 
-                        onChange={(e) => setMemberIdToLink(e.target.value)} 
-                        placeholder="e.g. 550e8400-e29b-41d4-a716-446655440000"
-                        className="bg-slate-50 text-slate-900 rounded-xl h-12 pr-10"
-                      />
-                      {isFetchingMemberToLink && (
-                        <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                          <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                        </div>
-                      )}
-                    </div>
-                    <p className="text-[10px] text-slate-400">Ask the member for their ID from their dashboard.</p>
-                  </div>
-
-                  {memberDetailsToLink && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="p-4 rounded-2xl bg-primary/5 border border-primary/20 flex items-center gap-4"
-                    >
-                      <div className="h-12 w-12 rounded-xl bg-primary/10 flex items-center justify-center text-primary overflow-hidden">
-                        {memberDetailsToLink.avatar_url ? (
-                          <img src={memberDetailsToLink.avatar_url} alt="" className="h-full w-full object-cover" />
-                        ) : (
-                          <UserPlus className="h-6 w-6" />
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-bold text-slate-900 truncate">{memberDetailsToLink.full_name}</p>
-                        <p className="text-[10px] text-slate-500 uppercase tracking-widest">Profile Found</p>
-                      </div>
-                      <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-                    </motion.div>
-                  )}
-
-                  <Button 
-                    onClick={() => handleLinkMemberToGym(memberIdToLink)} 
-                    disabled={isLinkingMember || !memberDetailsToLink}
-                    className="w-full h-12 bg-primary text-white font-bold rounded-xl shadow-glow"
-                  >
-                    {isLinkingMember ? "Linking..." : "Confirm & Link Member"}
                   </Button>
                 </div>
               )}
