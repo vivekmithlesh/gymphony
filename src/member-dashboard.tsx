@@ -464,7 +464,24 @@ export default function MemberDashboard() {
         const { data: profileData } = await supabase.from("profiles").select("*").eq("id", user.id).maybeSingle();
         const { data: memberData } = await supabase.from("members").select("*").eq("id", user.id).maybeSingle();
 
-        const resolvedGymId = profileData?.gym_id || memberData?.gym_id || null;
+        let resolvedGymId = profileData?.gym_id || memberData?.gym_id || null;
+
+        // Self-heal: if the profile has no gym_id (the join link didn't persist the
+        // binding), fall back to the gym the member actually PAID for — the payment
+        // row is the source of truth. This stops the "paid but still shows Join a
+        // Gym / asks to re-join" loop. The server side (approve_payment, mig 20260713)
+        // also writes this binding back so the owner sees the member.
+        if (!resolvedGymId) {
+          const { data: lastPayment } = await supabase
+            .from("payments")
+            .select("gym_id, created_at")
+            .eq("member_id", user.id)
+            .not("gym_id", "is", null)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (lastPayment?.gym_id) resolvedGymId = lastPayment.gym_id;
+        }
         const resolvedMobile = profileData?.phone || profileData?.mobile_number || profileData?.whatsapp_number || memberData?.phone || "";
 
         const mergedMember: Member = {

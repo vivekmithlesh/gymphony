@@ -207,7 +207,23 @@ export function JoinGymFlow({ gymId }: { gymId: string }) {
         .maybeSingle();
 
       const statusLower = (profile?.status ?? "").toLowerCase();
-      const isActiveHere = profile?.gym_id === gymId && statusLower === ACTIVE;
+      let isActiveHere = profile?.gym_id === gymId && statusLower === ACTIVE;
+
+      // Self-heal: if the member is Active but the profile gym binding didn't
+      // persist, treat them as already-a-member here when they have an APPROVED
+      // payment for THIS gym — otherwise they'd be asked to pay/join again (the
+      // reported loop). approve_payment (mig 20260713) also writes the binding back.
+      if (!isActiveHere && statusLower === ACTIVE) {
+        const { data: paidHere } = await supabase
+          .from("payments")
+          .select("id")
+          .eq("member_id", user!.id)
+          .eq("gym_id", gymId)
+          .in("status", ["Success", "Paid"])
+          .limit(1)
+          .maybeSingle();
+        if (paidHere) isActiveHere = true;
+      }
 
       if (isActiveHere) {
         setPhase("already");
