@@ -14,6 +14,10 @@ import { supabase } from "@/supabase";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { IndianMobileInput } from "@/components/IndianMobileInput";
+import { toIndianLocal, toIndianE164, looksLikeIndianMobile } from "@/lib/phone";
 import { MembershipGate } from "@/components/MembershipGate";
 import { buildCheckinUrl } from "@/lib/app-url";
 import { saveRedirect, buildAuthUrlWithRedirect } from "@/lib/auth-redirect";
@@ -51,7 +55,15 @@ interface GymBranding {
   gym_photos?: string[] | null;
 }
 
-type Phase = "loading" | "invalid" | "redirecting" | "owner" | "already" | "join";
+type Phase =
+  | "loading"
+  | "invalid"
+  | "redirecting"
+  | "owner"
+  | "already"
+  | "other_gym"
+  | "profile"
+  | "join";
 
 const ACTIVE = "active";
 // select("*") (not an explicit column list) because some branding columns like
@@ -72,6 +84,10 @@ export function JoinGymFlow({ gymId }: { gymId: string }) {
   const [phase, setPhase] = useState<Phase>("loading");
   const [gym, setGym] = useState<GymBranding | null>(null);
   const [plans, setPlans] = useState<GatePlan[]>([]);
+  const [profileName, setProfileName] = useState("");
+  const [profilePhone, setProfilePhone] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const linkedRef = useRef(false);
   const scanLoggedRef = useRef(false);
 
@@ -118,13 +134,13 @@ export function JoinGymFlow({ gymId }: { gymId: string }) {
       linkedRef.current = true;
       const fullName = user.user_metadata?.full_name || user.email?.split("@")[0] || "Member";
       try {
-        await supabase
-          .from("profiles")
-          .upsert(
-            { id: user.id, gym_id: gymId, full_name: fullName, email: user.email },
-            { onConflict: "id" },
-          );
-        await supabase.from("members").upsert(
+        // `members` is a VIEW over `profiles`, so writing the profiles row is the
+        // single source of truth — the member then surfaces in `members`
+        // automatically. We bind both gym_id (QR/leaderboard/store scope) and
+        // gym_owner_id (kiosk cross-gym guard + check_ins RLS). status is NOT
+        // written here: it stays 'Pending' until the owner approves a payment
+        // (the lockdown trigger would reject a client status change anyway).
+        await supabase.from("profiles").upsert(
           {
             id: user.id,
             gym_id: gymId,
@@ -134,6 +150,9 @@ export function JoinGymFlow({ gymId }: { gymId: string }) {
           },
           { onConflict: "id" },
         );
+        // Consume any pending owner-created invite matching this member's phone
+        // (best-effort — no-op if the member_invites table isn't present yet).
+        void supabase.rpc("app_claim_member_invite", { p_gym_id: gymId });
         logEvent("membership", "member-linked-to-gym", { gymId, memberId: user.id });
       } catch (err) {
         logEvent("membership", "member-link-failed", { gymId, error: String(err) });
@@ -183,22 +202,105 @@ export function JoinGymFlow({ gymId }: { gymId: string }) {
     (async () => {
       const { data: profile } = await supabase
         .from("profiles")
-        .select("status, gym_id")
+        .select("status, gym_id, full_name, phone, mobile_number")
         .eq("id", user!.id)
         .maybeSingle();
 
-      const isActiveHere =
-        profile?.gym_id === gymId && (profile?.status ?? "").toLowerCase() === ACTIVE;
+      const statusLower = (profile?.status ?? "").toLowerCase();
+      const isActiveHere = profile?.gym_id === gymId && statusLower === ACTIVE;
 
       if (isActiveHere) {
         setPhase("already");
         return;
       }
 
+      // SAFETY: if the member is ACTIVE at a DIFFERENT gym, do NOT silently relink
+      // them — the membership lockdown means we can't reset status client-side, so
+      // relinking would carry their Active status into this gym and hand them FREE
+      // access. Block here and offer an explicit, server-authoritative switch.
+      const activeElsewhere =
+        !!profile?.gym_id && profile.gym_id !== gymId && statusLower === ACTIVE;
+      if (activeElsewhere) {
+        setPhase("other_gym");
+        return;
+      }
+
       await linkMember(gym);
+
+      // Before checkout, make sure the gym has the member's name + phone. If the
+      // member arrived without them (e.g. they already had an account and never
+      // filled a signup form), collect them now — this also means the post-join
+      // "add your mobile" prompt on the dashboard never has to appear.
+      const existingName =
+        (profile?.full_name || "").trim() ||
+        ((user?.user_metadata?.full_name as string) || "").trim();
+      const existingPhone = profile?.phone || profile?.mobile_number || "";
+      if (!existingName || !existingPhone) {
+        setProfileName(existingName);
+        setProfilePhone(existingPhone ? toIndianLocal(existingPhone) : "");
+        setPhase("profile");
+        return;
+      }
       setPhase("join");
     })();
   }, [isLoading, gym, session, role, roleResolved, gymId, user, navigate, linkMember]);
+
+  // Save the member's details collected by the "profile" phase, then continue to
+  // plan selection. full_name / phone are NOT lockdown-protected, so the member
+  // can write their own row.
+  const saveProfileDetails = useCallback(async () => {
+    if (!user?.id) return;
+    if (!profileName.trim()) {
+      toast.error("Please enter your full name");
+      return;
+    }
+    if (!looksLikeIndianMobile(profilePhone)) {
+      toast.error("Enter a valid 10-digit mobile number");
+      return;
+    }
+    setSavingProfile(true);
+    try {
+      const phoneE164 = toIndianE164(profilePhone);
+      const { error } = await supabase
+        .from("profiles")
+        .update({ full_name: profileName.trim(), phone: phoneE164, mobile_number: phoneE164 })
+        .eq("id", user.id);
+      if (error) throw error;
+      // Now that the phone is set, claim any matching owner-created invite.
+      void supabase.rpc("app_claim_member_invite", { p_gym_id: gymId });
+      setPhase("join");
+    } catch (err) {
+      logEvent("membership", "profile-save-failed", { gymId, error: String(err) });
+      toast.error("Could not save your details. Please try again.");
+    } finally {
+      setSavingProfile(false);
+    }
+  }, [user, profileName, profilePhone, gymId]);
+
+  // Server-authoritative gym switch: resets the member to Pending for THIS gym so
+  // they re-pay and get re-approved (the lockdown trigger forbids a client status
+  // change, so this MUST go through the SECURITY DEFINER RPC). If the RPC isn't
+  // deployed yet, fail safe — never grant access.
+  const requestGymSwitch = useCallback(async () => {
+    if (!user?.id) return;
+    setSwitching(true);
+    try {
+      const { data, error } = await supabase.rpc("app_request_gym_switch", { p_gym_id: gymId });
+      if (error) throw error;
+      const res = (data ?? {}) as { success?: boolean; error?: string };
+      if (!res.success) {
+        toast.error(res.error || "Could not switch gyms. Please contact the gym.");
+        return;
+      }
+      void supabase.rpc("app_claim_member_invite", { p_gym_id: gymId });
+      setPhase("join");
+    } catch (err) {
+      logEvent("membership", "gym-switch-failed", { gymId, error: String(err) });
+      toast.error("Switching gyms isn't available yet. Please contact the gym front desk.");
+    } finally {
+      setSwitching(false);
+    }
+  }, [user, gymId]);
 
   const heroPhoto = useMemo(() => gym?.gym_photos?.[0] ?? null, [gym]);
 
@@ -290,6 +392,103 @@ export function JoinGymFlow({ gymId }: { gymId: string }) {
                 <QrCode className="h-4 w-4" /> Check in
               </Button>
             </div>
+          </CardContent>
+        </Card>
+      </Shell>
+    );
+  }
+
+  // phase === "other_gym": member is already Active at a DIFFERENT gym. Never
+  // silently relink (that would be free access). Offer an explicit switch that
+  // resets them to Pending for this gym, or let them keep their current gym.
+  if (phase === "other_gym") {
+    return (
+      <Shell>
+        <Card className="mx-auto max-w-md border-white/10 bg-white/5 backdrop-blur-xl">
+          <CardContent className="flex flex-col items-center gap-4 p-10 text-center">
+            <AlertCircle className="h-12 w-12 text-amber-500" />
+            <h2 className="text-xl font-bold">You're already active at another gym</h2>
+            <p className="text-sm text-muted-foreground">
+              Your account is currently an active member of a different gym. To join{" "}
+              {gym?.gym_name || "this gym"}, you'll start a fresh membership here — pick a plan and
+              get approved by this gym. Your current membership stays until you switch.
+            </p>
+            <div className="flex w-full flex-col gap-2 sm:flex-row">
+              <Button className="flex-1 gap-2" disabled={switching} onClick={requestGymSwitch}>
+                {switching ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <>
+                    Switch to this gym <ArrowRight className="h-4 w-4" />
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => navigate({ to: "/member-dashboard" })}
+              >
+                Keep my current gym
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </Shell>
+    );
+  }
+
+  // phase === "profile": collect the member's details before checkout.
+  if (phase === "profile") {
+    return (
+      <Shell>
+        <Card className="mx-auto max-w-md border-white/10 bg-white/5 backdrop-blur-xl">
+          <CardContent className="flex flex-col gap-5 p-8">
+            <div className="text-center">
+              <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-brand text-white shadow-glow">
+                <Building2 className="h-7 w-7" />
+              </div>
+              <h2 className="text-xl font-bold">Complete your details</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Join {gym?.gym_name || "this gym"} — we just need a couple of details to set up your
+                membership.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="join-full-name" className="text-sm font-medium text-foreground/80">
+                Full Name
+              </Label>
+              <Input
+                id="join-full-name"
+                value={profileName}
+                onChange={(e) => setProfileName(e.target.value)}
+                placeholder="e.g. Rohit Sharma"
+                className="h-12 rounded-xl border-white/10 bg-white/5"
+              />
+            </div>
+
+            <IndianMobileInput
+              id="join-phone"
+              label="Phone Number"
+              value={profilePhone}
+              onChange={setProfilePhone}
+              placeholder="9876543210"
+              inputClassName="bg-white/5 border-white/10"
+            />
+
+            <Button
+              onClick={saveProfileDetails}
+              disabled={savingProfile}
+              className="mt-2 h-12 w-full rounded-xl bg-gradient-brand font-bold text-white shadow-glow"
+            >
+              {savingProfile ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : (
+                <>
+                  Continue to plans <ArrowRight className="ml-2 h-4 w-4" />
+                </>
+              )}
+            </Button>
           </CardContent>
         </Card>
       </Shell>

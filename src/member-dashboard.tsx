@@ -311,15 +311,13 @@ export default function MemberDashboard() {
     }
     setIsUpdatingName(true);
     try {
+      // `members` is a read-only VIEW over `profiles`, so writing the profiles
+      // row is enough — the change surfaces in `members` automatically. (Upserting
+      // the view itself fails with "cannot update view 'members'".)
       const { error: profileError } = await supabase
         .from('profiles')
         .upsert({ id: member.id, full_name: fullName.trim() }, { onConflict: 'id' });
       if (profileError) throw profileError;
-
-      const { error: memberError } = await supabase
-        .from('members')
-        .upsert({ id: member.id, full_name: fullName.trim(), email: member.email }, { onConflict: 'id' });
-      if (memberError) throw memberError;
 
       toast.success("Profile Updated!", { description: "Your name has been updated successfully.", duration: 3000 });
       setMember((prev) => prev ? ({ ...prev, full_name: fullName.trim() }) : null);
@@ -658,36 +656,15 @@ export default function MemberDashboard() {
     setCheckoutPlan(plan);
   };
 
-  const handleJoinGym = async (gymId: string) => {
-    if (!member?.id) return;
-    setIsSavingGymId(true);
-    try {
-      // Persist the gym link on the member's OWN profile — the source of truth the
-      // dashboard reads on reload. Use UPDATE (not upsert): the row already exists
-      // and members have a self-update policy, whereas upsert's INSERT arm was
-      // rejected by RLS and silently swallowed, so the join never actually saved
-      // (dashboard unlocked optimistically, then reverted to "Join a Gym" on
-      // refresh). .select() confirms the write landed before we proceed.
-      const { data, error: joinErr } = await supabase
-        .from("profiles")
-        .update({ gym_id: gymId })
-        .eq("id", member.id)
-        .select("gym_id")
-        .maybeSingle();
-      if (joinErr) throw joinErr;
-      if (!data?.gym_id) throw new Error("Could not save your gym. Please try again.");
-
-      setMember((prev) => prev ? ({ ...prev, gym_id: gymId }) : null);
-      await refreshGymContext(gymId, member.id);
-      setSearchQuery(""); setSearchResults([]);
-      toast.success("Welcome to the Family!");
-      setTimeout(() => setShowPlansModal(true), 500);
-    } catch (err: any) {
-      console.error("join gym failed:", err);
-      toast.error(err?.message || "Failed to join gym. Please try again.");
-    } finally {
-      setIsSavingGymId(false);
-    }
+  const handleJoinGym = (gymId: string) => {
+    if (!gymId) return;
+    // Route through the canonical Join flow (/join/:gymId → JoinGymFlow). It loads
+    // the gym, binds the membership on the member's profile (gym_id + gym_owner_id),
+    // collects any missing profile details, claims a matching owner invite, then
+    // runs plan selection → payment → owner approval. This replaces the old ad-hoc
+    // `profiles.gym_id` UPDATE here, which broke with "Could not save your gym",
+    // skipped owner binding, and bypassed the proper checkout/approval gate.
+    if (typeof window !== "undefined") window.location.assign(`/join/${gymId}`);
   };
 
   const handleLogout = async () => {

@@ -133,20 +133,8 @@ export function ProfileSettings({ member: initialMember, gymInfo, onUpdate }: Pr
 
       console.log("PROFILE UPSERT SUCCESS:", profileData);
 
-      // 2. Sync with members table
-      const { error: memberError } = await supabase
-        .from('members')
-        .upsert({ 
-          id: user.id,
-          full_name: fullName.trim(),
-          mobile_number: cleanPhone,
-          phone: cleanPhone,
-          email: user.email
-        }, { onConflict: 'id' });
-
-      if (memberError) {
-        console.log('SYNC ERROR (members):', memberError.message, 'CODE:', memberError.code);
-      }
+      // No separate `members` write: it's a read-only VIEW over `profiles`, so the
+      // upsert above already surfaces there (writing the view fails outright).
 
       toast.success("Profile Updated Successfully! 🚀");
 

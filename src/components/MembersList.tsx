@@ -39,26 +39,29 @@ import { supabase } from "@/supabase";
 import { QRCodeSVG } from "qrcode.react";
 import { IndianMobileInput } from "@/components/IndianMobileInput";
 import { isValidIndianMobile, looksLikeIndianMobile, toIndianLocal, toIndianE164, phoneForWaMe } from "@/lib/phone";
+import { buildJoinUrl } from "@/lib/app-url";
 import { isApprovedPayment } from "@/lib/revenue";
 import { useAuth } from "@/lib/auth-context";
 
 // Optimized Member Row Component
-const MemberRow = memo(({ 
-  member, 
-  index, 
-  onSelect, 
-  onEdit, 
-  onMarkPaid, 
+const MemberRow = memo(({
+  member,
+  index,
+  onSelect,
+  onEdit,
+  onMarkPaid,
   onCollectPayment,
-  onDelete 
-}: { 
-  member: any; 
+  onDelete,
+  onShareInvite,
+}: {
+  member: any;
   index: number;
   onSelect: (m: any) => void;
   onEdit: (m: any) => void;
   onMarkPaid: (m: any) => void;
   onCollectPayment: (m: any) => void;
   onDelete: (m: any) => void;
+  onShareInvite: (m: any) => void;
 }) => (
   <motion.tr
     initial={{ opacity: 0, y: 10 }}
@@ -83,22 +86,25 @@ const MemberRow = memo(({
       <div className="font-semibold text-slate-900">₹{Number(member.amount_paid || 0).toLocaleString()}</div>
     </td>
     <td className="px-6 py-4 text-sm text-slate-600">
-      <Button 
-        variant="ghost" 
-        size="icon" 
-        onClick={() => onSelect(member)}
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => (member.__invite ? onShareInvite(member) : onSelect(member))}
+        title={member.__invite ? "Share invite" : "Member QR"}
         className="h-9 w-9 text-slate-400 hover:text-primary hover:bg-primary/5 rounded-xl transition-all"
       >
-        <QrCode className="h-5 w-5" />
+        {member.__invite ? <Upload className="h-5 w-5" /> : <QrCode className="h-5 w-5" />}
       </Button>
     </td>
     <td className="px-6 py-4">
       <Badge className={`rounded-full px-2.5 py-0.5 border-none font-bold text-[10px] shadow-sm ${
-        member.status === "Active" 
-          ? "bg-green-100 text-green-700" 
+        member.__invite
+          ? "bg-amber-100 text-amber-700"
+          : member.status === "Active"
+          ? "bg-green-100 text-green-700"
           : "bg-red-100 text-red-700"
       }`}>
-        {member.status || "Active"}
+        {member.__invite ? "Invited" : (member.status || "Active")}
       </Badge>
     </td>
     <td className="px-6 py-4 text-right">
@@ -108,30 +114,45 @@ const MemberRow = memo(({
             <MoreHorizontal className="h-4 w-4" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-40 bg-white border-slate-200 text-slate-900 rounded-xl p-1 shadow-elegant">
-          <DropdownMenuItem onClick={() => {
-            const message = `Hello ${member.member_name}, how can we help you today?`;
-            window.open(`https://wa.me/${phoneForWaMe(member.phone || member.mobile_number || "")}?text=${encodeURIComponent(message)}`, '_blank');
-          }} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-green-50 cursor-pointer text-green-600">
-            <MessageSquare className="h-3.5 w-3.5" />
-            <span className="text-xs font-medium">Chat with Us</span>
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onCollectPayment(member)} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/5 cursor-pointer text-primary">
-            <DollarSign className="h-3.5 w-3.5" />
-            <span className="text-xs font-medium">Collect Payment</span>
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onEdit(member)} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-50 cursor-pointer">
-            <Edit2 className="h-3.5 w-3.5 text-slate-400" />
-            <span className="text-xs font-medium">Edit</span>
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onMarkPaid(member)} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-green-50 cursor-pointer text-green-600">
-            <CheckCircle className="h-3.5 w-3.5" />
-            <span className="text-xs font-medium">Mark Paid</span>
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onDelete(member)} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-red-50 text-red-600 cursor-pointer">
-            <Trash2 className="h-3.5 w-3.5" />
-            <span className="text-xs font-medium">Delete</span>
-          </DropdownMenuItem>
+        <DropdownMenuContent align="end" className="w-44 bg-white border-slate-200 text-slate-900 rounded-xl p-1 shadow-elegant">
+          {member.__invite ? (
+            <>
+              <DropdownMenuItem onClick={() => onShareInvite(member)} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-green-50 cursor-pointer text-green-600">
+                <Upload className="h-3.5 w-3.5" />
+                <span className="text-xs font-medium">Share Invite</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onDelete(member)} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-red-50 text-red-600 cursor-pointer">
+                <Trash2 className="h-3.5 w-3.5" />
+                <span className="text-xs font-medium">Remove Invite</span>
+              </DropdownMenuItem>
+            </>
+          ) : (
+            <>
+              <DropdownMenuItem onClick={() => {
+                const message = `Hello ${member.member_name}, how can we help you today?`;
+                window.open(`https://wa.me/${phoneForWaMe(member.phone || member.mobile_number || "")}?text=${encodeURIComponent(message)}`, '_blank');
+              }} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-green-50 cursor-pointer text-green-600">
+                <MessageSquare className="h-3.5 w-3.5" />
+                <span className="text-xs font-medium">Chat with Us</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onCollectPayment(member)} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/5 cursor-pointer text-primary">
+                <DollarSign className="h-3.5 w-3.5" />
+                <span className="text-xs font-medium">Collect Payment</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onEdit(member)} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-50 cursor-pointer">
+                <Edit2 className="h-3.5 w-3.5 text-slate-400" />
+                <span className="text-xs font-medium">Edit</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onMarkPaid(member)} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-green-50 cursor-pointer text-green-600">
+                <CheckCircle className="h-3.5 w-3.5" />
+                <span className="text-xs font-medium">Mark Paid</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onDelete(member)} className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-red-50 text-red-600 cursor-pointer">
+                <Trash2 className="h-3.5 w-3.5" />
+                <span className="text-xs font-medium">Delete</span>
+              </DropdownMenuItem>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </td>
@@ -140,7 +161,7 @@ const MemberRow = memo(({
 
 MemberRow.displayName = "MemberRow";
 
-export function MembersList() {
+export function MembersList({ reloadToken = 0 }: { reloadToken?: number } = {}) {
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
@@ -184,7 +205,10 @@ export function MembersList() {
   useEffect(() => {
     fetchMembers();
     fetchAvailablePlans();
-  }, [currentUser]);
+    // `reloadToken` is bumped by the owner dashboard after a manual Add Member so
+    // the freshly-created (Pending) member appears here without a page refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, reloadToken]);
 
   const fetchAvailablePlans = async () => {
     try {
@@ -294,6 +318,7 @@ export function MembersList() {
       const memberRows = data || [];
       const memberIds = memberRows.map((member: any) => member.id).filter(Boolean);
 
+      let realMembers: any[] = memberRows;
       if (memberIds.length > 0) {
         // "Amount Paid" is derived from the payments ledger — counting ONLY
         // approved (Paid/Success) rows — so it matches the Dashboard and Revenue
@@ -313,20 +338,41 @@ export function MembersList() {
               (paidByMember.get(p.member_id) || 0) + (Number(p.amount) || 0)
             );
           }
-
-          setMembers(
-            memberRows.map((member: any) => ({
-              ...member,
-              amount_paid: paidByMember.get(member.id) || 0
-            }))
-          );
+          realMembers = memberRows.map((member: any) => ({
+            ...member,
+            amount_paid: paidByMember.get(member.id) || 0
+          }));
         } else {
           console.warn("Payments fetch error:", paymentsError.message);
-          setMembers(memberRows);
         }
-      } else {
-        setMembers(memberRows);
       }
+
+      // Owner-added "offline" members live in member_invites — profiles.id is FK-
+      // bound to auth.users, so a member without an account can't be a profiles
+      // row. Surface pending invites as read-only "Pending" rows until the person
+      // signs up via the Join QR and the invite is claimed. If the table isn't
+      // present yet (migration 20260708 not applied) this silently stays empty.
+      const { data: inviteRows } = await supabase
+        .from("member_invites")
+        .select("id, full_name, phone, mobile_number, membership_plan, created_at")
+        .eq("gym_owner_id", userId)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false });
+
+      const inviteMembers = (inviteRows || []).map((inv: any) => ({
+        id: `invite:${inv.id}`,
+        invite_id: inv.id,
+        __invite: true,
+        member_name: inv.full_name,
+        phone: inv.phone || inv.mobile_number || "",
+        mobile_number: inv.mobile_number || inv.phone || "",
+        membership_plan: inv.membership_plan || "",
+        status: "Pending",
+        amount_paid: 0,
+        created_at: inv.created_at,
+      }));
+
+      setMembers([...inviteMembers, ...realMembers]);
     } catch (error: any) {
       console.error("Critical error in fetchMembers:", error.message);
     } finally {
@@ -353,6 +399,22 @@ export function MembersList() {
   const remainingCount = filteredMembers.length - visibleMembers.length;
 
   const handleDelete = async (member: any) => {
+    // Pending invites (owner-added members who haven't signed up) live in
+    // member_invites, not profiles — cancel the invite instead.
+    if (member.__invite) {
+      if (!window.confirm(`Remove the pending invite for ${member.member_name || "this member"}?`)) return;
+      try {
+        const { error } = await supabase.from("member_invites").delete().eq("id", member.invite_id);
+        if (error) throw error;
+        setMembers(prev => prev.filter(m => m.id !== member.id));
+        toast.success("Invite removed");
+      } catch (error: any) {
+        console.warn("Invite delete error:", error);
+        toast.error("Could not remove the invite. Please try again.");
+      }
+      return;
+    }
+
     if (!window.confirm(`Are you sure you want to delete this member?`)) {
       return;
     }
@@ -370,6 +432,27 @@ export function MembersList() {
       toast.success("Member deleted successfully");
     } catch (error: any) {
       console.warn("Delete error:", error);
+    }
+  };
+
+  // Share a pending invite: open WhatsApp prefilled with the gym's Join QR link
+  // so the invited member can sign up, pick a plan, pay, and request approval.
+  const handleShareInvite = (member: any) => {
+    const gymId = gymMeta.id;
+    if (!gymId) {
+      toast.error("Finish your gym setup to share invites.");
+      return;
+    }
+    const link = buildJoinUrl(gymId);
+    const message =
+      `Hi ${member.member_name || "there"}, join ${gymMeta.name || "our gym"} on Gymphony — ` +
+      `sign up, pick your plan and activate your membership here: ${link}`;
+    const waPhone = phoneForWaMe(member.phone || member.mobile_number || "");
+    if (waPhone) {
+      window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(message)}`, "_blank", "noopener");
+    } else {
+      navigator.clipboard?.writeText(link);
+      toast.success("Invite link copied");
     }
   };
 
@@ -674,6 +757,7 @@ export function MembersList() {
                   onMarkPaid={handleMarkPaid}
                   onCollectPayment={setPaymentMember}
                   onDelete={handleDelete}
+                  onShareInvite={handleShareInvite}
                 />
               ))}
             </tbody>
