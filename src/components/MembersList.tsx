@@ -173,6 +173,7 @@ export function MembersList({ reloadToken = 0 }: { reloadToken?: number } = {}) 
   const [members, setMembers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedMember, setSelectedMember] = useState<any>(null);
+  const [shareInviteMember, setShareInviteMember] = useState<any>(null);
   const [editingMember, setEditingMember] = useState<any>(null);
   const [paymentMember, setPaymentMember] = useState<any>(null);
   const [paymentAmount, setPaymentAmount] = useState("");
@@ -435,26 +436,22 @@ export function MembersList({ reloadToken = 0 }: { reloadToken?: number } = {}) 
     }
   };
 
-  // Share a pending invite: open WhatsApp prefilled with the gym's Join QR link
-  // so the invited member can sign up, pick a plan, pay, and request approval.
+  // Share a pending invite: open a modal with the gym's Join QR + link so the
+  // owner can show/screenshot the QR or send the link on WhatsApp. The QR and link
+  // are gym-scoped (the same /join/:gymId for every member); the WhatsApp message
+  // is personalised per member.
   const handleShareInvite = (member: any) => {
-    const gymId = gymMeta.id;
-    if (!gymId) {
+    if (!gymMeta.id) {
       toast.error("Finish your gym setup to share invites.");
       return;
     }
-    const link = buildJoinUrl(gymId);
-    const message =
-      `Hi ${member.member_name || "there"}, join ${gymMeta.name || "our gym"} on Gymphony — ` +
-      `sign up, pick your plan and activate your membership here: ${link}`;
-    const waPhone = phoneForWaMe(member.phone || member.mobile_number || "");
-    if (waPhone) {
-      window.open(`https://wa.me/${waPhone}?text=${encodeURIComponent(message)}`, "_blank", "noopener");
-    } else {
-      navigator.clipboard?.writeText(link);
-      toast.success("Invite link copied");
-    }
+    setShareInviteMember(member);
   };
+
+  const shareInviteLink = gymMeta.id ? buildJoinUrl(gymMeta.id) : "";
+  const shareInviteMessage = (m: any) =>
+    `Hi ${m?.member_name || "there"}, join ${gymMeta.name || "our gym"} on Gymphony — ` +
+    `sign up, pick your plan and activate your membership here: ${shareInviteLink}`;
 
   const handleMarkPaid = async (member: any) => {
     try {
@@ -841,6 +838,72 @@ export function MembersList({ reloadToken = 0 }: { reloadToken?: number } = {}) 
                 >
                   Print ID Card
                 </Button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Share Invite Modal — gym Join QR + link to send/show a pending member */}
+      <AnimatePresence>
+        {shareInviteMember && (
+          <div
+            className="fixed inset-0 z-100 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
+            onClick={() => setShareInviteMember(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm bg-white rounded-[2.5rem] max-h-[90vh] overflow-y-auto shadow-2xl p-8"
+            >
+              <div className="flex flex-col items-center text-center space-y-5">
+                <div className="flex w-full items-center justify-between">
+                  <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+                    <QrCode className="h-5 w-5" />
+                  </div>
+                  <button onClick={() => setShareInviteMember(null)} className="text-slate-400 hover:text-slate-600 transition-colors">
+                    <X className="h-6 w-6" />
+                  </button>
+                </div>
+
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900">Invite {shareInviteMember.member_name || "member"}</h3>
+                  <p className="mt-1 text-sm text-slate-500">Show this QR or send the link. They sign up, pick a plan, pay, and you approve.</p>
+                </div>
+
+                <div className="p-5 bg-slate-50 rounded-3xl border-2 border-slate-100 flex items-center justify-center">
+                  {shareInviteLink ? (
+                    <QRCodeSVG value={shareInviteLink} size={200} level="M" includeMargin className="rounded-xl bg-white" />
+                  ) : (
+                    <p className="text-sm text-slate-500 p-8">Finish your gym setup to generate the QR.</p>
+                  )}
+                </div>
+
+                <div className="w-full rounded-2xl bg-slate-50 p-3 text-xs text-slate-700 border border-slate-100 break-all text-left">
+                  {shareInviteLink}
+                </div>
+
+                <div className="grid w-full grid-cols-2 gap-3">
+                  <Button
+                    variant="outline"
+                    className="h-11 rounded-xl border-slate-200 font-semibold"
+                    onClick={() => { navigator.clipboard?.writeText(shareInviteLink); toast.success("Invite link copied"); }}
+                  >
+                    Copy Link
+                  </Button>
+                  <Button
+                    className="h-11 rounded-xl bg-gradient-brand text-white font-bold"
+                    onClick={() => {
+                      const wa = phoneForWaMe(shareInviteMember.phone || shareInviteMember.mobile_number || "");
+                      const text = encodeURIComponent(shareInviteMessage(shareInviteMember));
+                      window.open(wa ? `https://wa.me/${wa}?text=${text}` : `https://wa.me/?text=${text}`, "_blank", "noopener");
+                    }}
+                  >
+                    WhatsApp
+                  </Button>
+                </div>
               </div>
             </motion.div>
           </div>

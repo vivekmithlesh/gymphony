@@ -8,17 +8,27 @@
 //   • Join QR     → {origin}/join/{gym_id}
 //   • Check-in QR → {origin}/checkin/{gym_id}
 //
-// `getAppOrigin()` prefers an explicit build-time origin (so a poster printed
-// from a laptop on a preview URL still points at production) and falls back to
-// the current browser origin. Parsing is tolerant: it reads the gym id out of
-// the new URL form AND the legacy JSON/bare-uuid forms, so old posters and the
-// in-app camera scanner keep working during rollout.
+// `getAppOrigin()` is BROWSER-FIRST: the owner mints QR/invite links from the
+// real production domain they're viewing, so links auto-follow a domain change
+// (e.g. a Vercel project rename) with no env edit + redeploy dance. It falls back
+// to the configured build-time origin ONLY for localhost/dev and SSR, so a link
+// generated locally still points at production. Parsing is tolerant: it reads the
+// gym id from the new URL form AND the legacy JSON/bare-uuid forms.
 // =============================================================================
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const LOCAL_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?$/i;
 
 /** The public base origin used when minting QR deep-links (no trailing slash). */
 export function getAppOrigin(): string {
+  // Prefer the live browser origin unless we're on localhost/dev — that way the
+  // QR encodes whatever domain the owner is actually on (the current production
+  // host), instead of a stale build-time value.
+  if (typeof window !== "undefined" && window.location?.origin) {
+    const origin = window.location.origin.replace(/\/+$/, "");
+    if (!LOCAL_ORIGIN_RE.test(origin)) return origin;
+  }
+
   const env = import.meta.env as Record<string, string | undefined>;
   const configured = (
     env.VITE_APP_URL ||
@@ -27,7 +37,9 @@ export function getAppOrigin(): string {
     ""
   ).trim();
   if (configured) return configured.replace(/\/+$/, "");
-  if (typeof window !== "undefined" && window.location?.origin) return window.location.origin;
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin.replace(/\/+$/, "");
+  }
   return "";
 }
 
