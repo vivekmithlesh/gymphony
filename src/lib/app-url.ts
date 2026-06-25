@@ -21,14 +21,12 @@ const LOCAL_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])
 
 /** The public base origin used when minting QR deep-links (no trailing slash). */
 export function getAppOrigin(): string {
-  // Prefer the live browser origin unless we're on localhost/dev — that way the
-  // QR encodes whatever domain the owner is actually on (the current production
-  // host), instead of a stale build-time value.
-  if (typeof window !== "undefined" && window.location?.origin) {
-    const origin = window.location.origin.replace(/\/+$/, "");
-    if (!LOCAL_ORIGIN_RE.test(origin)) return origin;
-  }
-
+  // Prefer the configured PRODUCTION origin (VITE_APP_URL). QR / invite links MUST
+  // point at the public production domain — never at whatever URL the owner happens
+  // to be viewing, which on Vercel can be a *preview / deployment* URL guarded by
+  // Deployment Protection (members then hit the "request access" wall). So the env
+  // value wins. Set VITE_APP_URL in Vercel (Production + Preview) to your public
+  // domain, e.g. https://gymphony.vercel.app.
   const env = import.meta.env as Record<string, string | undefined>;
   const configured = (
     env.VITE_APP_URL ||
@@ -37,8 +35,12 @@ export function getAppOrigin(): string {
     ""
   ).trim();
   if (configured) return configured.replace(/\/+$/, "");
+
+  // No env configured → fall back to the live browser origin, but skip localhost so
+  // a link generated in dev still points at a real host.
   if (typeof window !== "undefined" && window.location?.origin) {
-    return window.location.origin.replace(/\/+$/, "");
+    const origin = window.location.origin.replace(/\/+$/, "");
+    if (!LOCAL_ORIGIN_RE.test(origin)) return origin;
   }
   return "";
 }
