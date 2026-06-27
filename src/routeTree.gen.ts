@@ -16,6 +16,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as RefundRouteImport } from './routes/refund'
 import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as PlatformAdminRouteImport } from './routes/platform-admin'
 import { Route as OwnerDashboardRouteImport } from './routes/owner-dashboard'
 import { Route as MemberSignupRouteImport } from './routes/member-signup'
 import { Route as MemberLoginRouteImport } from './routes/member-login'
@@ -67,6 +68,11 @@ const RefundRoute = RefundRouteImport.update({
 const PrivacyRoute = PrivacyRouteImport.update({
   id: '/privacy',
   path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PlatformAdminRoute = PlatformAdminRouteImport.update({
+  id: '/platform-admin',
+  path: '/platform-admin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OwnerDashboardRoute = OwnerDashboardRouteImport.update({
@@ -170,6 +176,7 @@ export interface FileRoutesByFullPath {
   '/member-login': typeof MemberLoginRoute
   '/member-signup': typeof MemberSignupRoute
   '/owner-dashboard': typeof OwnerDashboardRoute
+  '/platform-admin': typeof PlatformAdminRoute
   '/privacy': typeof PrivacyRoute
   '/refund': typeof RefundRoute
   '/reset-password': typeof ResetPasswordRoute
@@ -196,6 +203,7 @@ export interface FileRoutesByTo {
   '/member-login': typeof MemberLoginRoute
   '/member-signup': typeof MemberSignupRoute
   '/owner-dashboard': typeof OwnerDashboardRoute
+  '/platform-admin': typeof PlatformAdminRoute
   '/privacy': typeof PrivacyRoute
   '/refund': typeof RefundRoute
   '/reset-password': typeof ResetPasswordRoute
@@ -223,6 +231,7 @@ export interface FileRoutesById {
   '/member-login': typeof MemberLoginRoute
   '/member-signup': typeof MemberSignupRoute
   '/owner-dashboard': typeof OwnerDashboardRoute
+  '/platform-admin': typeof PlatformAdminRoute
   '/privacy': typeof PrivacyRoute
   '/refund': typeof RefundRoute
   '/reset-password': typeof ResetPasswordRoute
@@ -251,6 +260,7 @@ export interface FileRouteTypes {
     | '/member-login'
     | '/member-signup'
     | '/owner-dashboard'
+    | '/platform-admin'
     | '/privacy'
     | '/refund'
     | '/reset-password'
@@ -277,6 +287,7 @@ export interface FileRouteTypes {
     | '/member-login'
     | '/member-signup'
     | '/owner-dashboard'
+    | '/platform-admin'
     | '/privacy'
     | '/refund'
     | '/reset-password'
@@ -303,6 +314,7 @@ export interface FileRouteTypes {
     | '/member-login'
     | '/member-signup'
     | '/owner-dashboard'
+    | '/platform-admin'
     | '/privacy'
     | '/refund'
     | '/reset-password'
@@ -330,6 +342,7 @@ export interface RootRouteChildren {
   MemberLoginRoute: typeof MemberLoginRoute
   MemberSignupRoute: typeof MemberSignupRoute
   OwnerDashboardRoute: typeof OwnerDashboardRoute
+  PlatformAdminRoute: typeof PlatformAdminRoute
   PrivacyRoute: typeof PrivacyRoute
   RefundRoute: typeof RefundRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
@@ -398,6 +411,13 @@ declare module '@tanstack/react-router' {
       path: '/owner-dashboard'
       fullPath: '/owner-dashboard'
       preLoaderRoute: typeof OwnerDashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/platform-admin': {
+      id: '/platform-admin'
+      path: '/platform-admin'
+      fullPath: '/platform-admin'
+      preLoaderRoute: typeof PlatformAdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/member-signup': {
@@ -530,6 +550,7 @@ const rootRouteChildren: RootRouteChildren = {
   MemberLoginRoute: MemberLoginRoute,
   MemberSignupRoute: MemberSignupRoute,
   OwnerDashboardRoute: OwnerDashboardRoute,
+  PlatformAdminRoute: PlatformAdminRoute,
   PrivacyRoute: PrivacyRoute,
   RefundRoute: RefundRoute,
   ResetPasswordRoute: ResetPasswordRoute,

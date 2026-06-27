@@ -25,6 +25,24 @@ import {
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/supabase";
 import { resolveUserRole, type UserRole } from "@/lib/auth-role";
+import { logLoginEvent, isAdminEmail } from "@/lib/platform-admin";
+
+// Dedup key: we record a login row once per access token. A real sign-in mints a
+// new token (logged once); tab refocus can re-fire SIGNED_IN with the SAME token
+// (skipped). Token refreshes fire TOKEN_REFRESHED — not SIGNED_IN — so they never
+// log. Scoped to sessionStorage (per tab) and guarded for SSR/quota errors.
+const LOGIN_LOGGED_TOKEN_KEY = "gymphony:last_login_logged_token";
+
+function recordLoginOnce(token: string | undefined) {
+  if (!token) return;
+  try {
+    if (sessionStorage.getItem(LOGIN_LOGGED_TOKEN_KEY) === token) return;
+    sessionStorage.setItem(LOGIN_LOGGED_TOKEN_KEY, token);
+  } catch {
+    // sessionStorage unavailable (SSR/private mode) — fall through and log once.
+  }
+  void logLoginEvent();
+}
 
 interface AuthContextValue {
   /** The current Supabase session, or null when signed out. */
@@ -91,12 +109,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ]);
         if (!active || token !== applyToken.current) return; // superseded
         setRole(resolved);
-        setIsPlatformAdmin(Boolean(adminRes.data?.is_platform_admin));
+        // Flag (server-managed) OR the hardcoded platform-owner email. Mirrors the
+        // is_platform_admin() SQL gate so the panel renders for that email even
+        // when the DB flag isn't set. Server still enforces every admin read.
+        setIsPlatformAdmin(
+          Boolean(adminRes.data?.is_platform_admin) || isAdminEmail(nextSession.user.email),
+        );
       } catch (err) {
         if (!active || token !== applyToken.current) return;
         console.warn("[Auth] role resolution failed:", err);
         setRole(null);
-        setIsPlatformAdmin(false);
+        setIsPlatformAdmin(isAdminEmail(nextSession.user.email));
       } finally {
         if (active && token === applyToken.current) setRoleResolved(true);
       }
@@ -120,8 +143,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     //    changes, which the Supabase client mirrors into this listener).
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    } = supabase.auth.onAuthStateChange((event, nextSession) => {
       void applySession(nextSession);
+      // Audit only genuine sign-ins (not INITIAL_SESSION / TOKEN_REFRESHED).
+      if (event === "SIGNED_IN") {
+        recordLoginOnce(nextSession?.access_token);
+      } else if (event === "SIGNED_OUT") {
+        try {
+          sessionStorage.removeItem(LOGIN_LOGGED_TOKEN_KEY);
+        } catch {
+          /* ignore */
+        }
+      }
     });
 
     return () => {

@@ -51,10 +51,10 @@ export function Navbar() {
         <div className="hidden items-center gap-3 md:flex">
           {isPlatformAdmin && (
             <Link
-              to="/admin"
+              to="/platform-admin"
               className="text-sm font-semibold text-primary transition-colors hover:text-primary/80"
             >
-              Admin
+              Platform Admin
             </Link>
           )}
           <Link
@@ -95,11 +95,11 @@ export function Navbar() {
             ))}
             {isPlatformAdmin && (
               <Link
-                to="/admin"
+                to="/platform-admin"
                 onClick={() => setOpen(false)}
                 className="rounded-lg px-4 py-3 text-sm font-semibold text-primary hover:bg-accent"
               >
-                Admin
+                Platform Admin
               </Link>
             )}
             <Link
